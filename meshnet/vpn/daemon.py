@@ -15,17 +15,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 from typing import Any
 
 from meshtastic import portnums_pb2
 
-from meshnet.config import MeshnetConfig, parse_config
-from meshnet.crypto import KeyPair
-from meshnet.routing import RoutingTable
-from meshnet.session import PeerSession, SessionState
-from meshnet.tap import TapDevice
-from meshnet.transport import (
+from meshnet.vpn.config import MeshnetConfig, parse_config
+from meshnet.vpn.crypto import KeyPair
+from meshnet.vpn.routing import RoutingTable
+from meshnet.vpn.session import PeerSession, SessionState
+from meshnet.vpn.tap import TapDevice
+from meshnet.vpn.transport import (
     Fragmenter,
     HandshakeInit,
     HandshakeResponse,
@@ -33,10 +32,6 @@ from meshnet.transport import (
     TransportFragment,
     parse_packet,
 )
-
-# Avoid circular import at module level — import at runtime.
-# meshtastic_socket lives in the project root, not inside the meshnet package.
-sys.path.insert(0, ".")
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +81,7 @@ class MeshVPN:
         )
 
         # Connect to the meshtastic radio.
-        from meshtastic_socket import Meshtastic
+        from meshnet.meshtastic_core import Meshtastic
 
         self._mesh = Meshtastic(
             ip=cfg.interface.meshtastic_host,

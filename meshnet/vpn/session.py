@@ -23,7 +23,7 @@ from enum import Enum
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 
-from meshnet.crypto import (
+from meshnet.vpn.crypto import (
     KeyPair,
     decrypt,
     derive_transport_keys,
@@ -33,7 +33,7 @@ from meshnet.crypto import (
     mac_blake2s,
     verify_mac,
 )
-from meshnet.transport import (
+from meshnet.vpn.transport import (
     HandshakeInit,
     HandshakeResponse,
     TransportData,
@@ -59,6 +59,10 @@ class SessionState(Enum):
 class PeerSession:
     """Manages handshake state and transport encryption for one peer."""
 
+    # Sliding window size for replay protection.  Must accommodate
+    # reasonable reordering over the mesh radio link.
+    _REPLAY_WINDOW_SIZE: int = 256
+
     def __init__(
         self,
         peer_node_id: str,
@@ -78,6 +82,10 @@ class PeerSession:
         self.recv_key: bytes | None = None
         self.send_counter: int = 0
         self.recv_counter_max: int = 0
+
+        # Sliding-window replay protection state.
+        self._recv_counter_seen: set[int] = set()
+        self._recv_counter_window_floor: int = 0
 
         # Handshake temporaries
         self._local_session_id: int = 0
@@ -156,6 +164,8 @@ class PeerSession:
         self.recv_key = recv_key
         self.send_counter = 0
         self.recv_counter_max = 0
+        self._recv_counter_seen = set()
+        self._recv_counter_window_floor = 0
         self._established_at = time.monotonic()
         self.state = SessionState.ESTABLISHED
 
@@ -224,6 +234,8 @@ class PeerSession:
         self.recv_key = recv_key
         self.send_counter = 0
         self.recv_counter_max = 0
+        self._recv_counter_seen = set()
+        self._recv_counter_window_floor = 0
         self._established_at = time.monotonic()
         self.state = SessionState.ESTABLISHED
         log.info(
@@ -260,13 +272,34 @@ class PeerSession:
         """
         if self.state != SessionState.ESTABLISHED or self.recv_key is None:
             raise RuntimeError(f"Session with {self.peer_node_id} not established")
-        if data.counter <= self.recv_counter_max and self.recv_counter_max > 0:
+
+        # Replay protection: reject any counter we have already seen.
+        # Use a set-based sliding window for robustness against reordering.
+        if data.counter in self._recv_counter_seen:
             raise ValueError(
-                f"Replay detected: counter {data.counter} <= {self.recv_counter_max}"
+                f"Replay detected: counter {data.counter} already seen"
+            )
+        if data.counter < self._recv_counter_window_floor:
+            raise ValueError(
+                f"Replay detected: counter {data.counter} below window floor "
+                f"{self._recv_counter_window_floor}"
             )
 
         frame = decrypt(self.recv_key, data.counter, data.ciphertext)
+
+        # Track this counter in the sliding window.
+        self._recv_counter_seen.add(data.counter)
         self.recv_counter_max = max(self.recv_counter_max, data.counter)
+
+        # Slide the window forward: discard entries older than window_size
+        # behind the highest seen counter.
+        if len(self._recv_counter_seen) > self._REPLAY_WINDOW_SIZE:
+            new_floor = self.recv_counter_max - self._REPLAY_WINDOW_SIZE + 1
+            self._recv_counter_seen = {
+                c for c in self._recv_counter_seen if c >= new_floor
+            }
+            self._recv_counter_window_floor = new_floor
+
         return frame
 
     # -- rekey check --------------------------------------------------------

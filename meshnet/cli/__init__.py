@@ -21,7 +21,7 @@ import signal
 import sys
 from pathlib import Path
 
-from meshnet.crypto import KeyPair, generate_psk
+from meshnet.vpn.crypto import KeyPair, generate_psk
 
 PID_DIR = Path("/run/meshnet")
 
@@ -53,9 +53,13 @@ def _cmd_up(args: argparse.Namespace) -> None:
         print("Error: meshnet up requires root (for TAP device creation)", file=sys.stderr)
         sys.exit(1)
 
-    from meshnet.daemon import MeshVPN
+    from meshnet.vpn.daemon import MeshVPN
 
     config_path: str = args.config
+
+    # Warn if the config file is world-readable (it contains the private key).
+    _warn_config_permissions(Path(config_path))
+
     vpn = MeshVPN(config_path)
     loop = asyncio.new_event_loop()
 
@@ -67,10 +71,14 @@ def _cmd_up(args: argparse.Namespace) -> None:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    # Write PID file.
+    # Write PID file atomically with restrictive permissions.
     PID_DIR.mkdir(parents=True, exist_ok=True)
     pid_file = PID_DIR / "meshnet.pid"
-    pid_file.write_text(str(os.getpid()))
+    fd = os.open(str(pid_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        os.write(fd, str(os.getpid()).encode())
+    finally:
+        os.close(fd)
 
     try:
         loop.run_until_complete(vpn.start())
@@ -81,13 +89,38 @@ def _cmd_up(args: argparse.Namespace) -> None:
         loop.close()
 
 
+def _warn_config_permissions(path: Path) -> None:
+    """Emit a warning if the config file is readable by group or others."""
+    try:
+        mode = path.stat().st_mode
+        if mode & 0o077:
+            logging.getLogger(__name__).warning(
+                "Config file %s has insecure permissions %04o — "
+                "it contains your private key. Recommended: chmod 600 %s",
+                path,
+                mode & 0o7777,
+                path,
+            )
+    except OSError:
+        pass  # stat failure is fine — parse_config will raise
+
+
 def _cmd_down(_args: argparse.Namespace) -> None:
     """Stop a running MeshVPN daemon by sending SIGTERM to its PID."""
     pid_file = PID_DIR / "meshnet.pid"
     if not pid_file.exists():
         print("No running meshnet daemon found", file=sys.stderr)
         sys.exit(1)
-    pid = int(pid_file.read_text().strip())
+    raw = pid_file.read_text().strip()
+    if not raw.isdigit():
+        print(f"Corrupt PID file: {raw!r}", file=sys.stderr)
+        pid_file.unlink(missing_ok=True)
+        sys.exit(1)
+    pid = int(raw)
+    if pid <= 0:
+        print(f"Invalid PID: {pid}", file=sys.stderr)
+        pid_file.unlink(missing_ok=True)
+        sys.exit(1)
     try:
         os.kill(pid, signal.SIGTERM)
         print(f"Sent SIGTERM to meshnet daemon (PID {pid})")
@@ -103,8 +136,8 @@ def _cmd_show(_args: argparse.Namespace) -> None:
         print("Error: --config is required for show", file=sys.stderr)
         sys.exit(1)
 
-    from meshnet.config import parse_config
-    from meshnet.crypto import KeyPair
+    from meshnet.vpn.config import parse_config
+    from meshnet.vpn.crypto import KeyPair
 
     cfg = parse_config(config_path)
     iface = cfg.interface

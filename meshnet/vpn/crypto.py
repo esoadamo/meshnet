@@ -167,7 +167,13 @@ def encrypt(key: bytes, counter: int, plaintext: bytes) -> bytes:
 
     Nonce is an 8-byte little-endian *counter* zero-padded to 12 bytes.
     Returns ``ciphertext || tag`` (16-byte Poly1305 tag appended).
+
+    :raises OverflowError: if *counter* exceeds the 8-byte nonce space.
     """
+    if counter < 0 or counter >= 2**64:
+        raise OverflowError(
+            f"Nonce counter out of range: {counter} (must be 0..2^64-1)"
+        )
     nonce = counter.to_bytes(8, "little") + b"\x00" * 4
     return ChaCha20Poly1305(key).encrypt(nonce, plaintext, associated_data=None)
 
@@ -176,7 +182,13 @@ def decrypt(key: bytes, counter: int, ciphertext: bytes) -> bytes:
     """ChaCha20-Poly1305 AEAD decrypt.
 
     Raises ``cryptography.exceptions.InvalidTag`` on authentication failure.
+
+    :raises OverflowError: if *counter* exceeds the 8-byte nonce space.
     """
+    if counter < 0 or counter >= 2**64:
+        raise OverflowError(
+            f"Nonce counter out of range: {counter} (must be 0..2^64-1)"
+        )
     nonce = counter.to_bytes(8, "little") + b"\x00" * 4
     return ChaCha20Poly1305(key).decrypt(nonce, ciphertext, associated_data=None)
 

@@ -211,6 +211,9 @@ class _ReassemblyBuffer:
 class Fragmenter:
     """Fragment outgoing transport payloads and reassemble incoming fragments."""
 
+    # Hard cap on concurrent reassembly buffers to prevent memory exhaustion.
+    MAX_REASSEMBLY_BUFFERS: int = 256
+
     def __init__(self, timeout: float = 30.0) -> None:
         self._next_msg_id: int = 0
         self._buffers: dict[tuple[str, int], _ReassemblyBuffer] = {}
@@ -257,10 +260,21 @@ class Fragmenter:
     def reassemble(self, sender: str, fragment: TransportFragment) -> TransportData | None:
         """Feed a fragment. Returns the reassembled :class:`TransportData`
         when all fragments have arrived, or ``None`` if still incomplete.
+
+        Enforces a maximum number of concurrent reassembly buffers.  When
+        the limit is reached, the oldest buffer is evicted to make room.
         """
+        # Validate fragment metadata.
+        if fragment.frag_total == 0 or fragment.frag_index >= fragment.frag_total:
+            return None  # malformed fragment — silently drop
+
         key = (sender, fragment.msg_id)
         buf = self._buffers.get(key)
         if buf is None:
+            # Evict oldest buffer if at capacity.
+            if len(self._buffers) >= self.MAX_REASSEMBLY_BUFFERS:
+                oldest_key = min(self._buffers, key=lambda k: self._buffers[k].created_at)
+                del self._buffers[oldest_key]
             buf = _ReassemblyBuffer(total=fragment.frag_total)
             self._buffers[key] = buf
 

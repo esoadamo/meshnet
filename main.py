@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from meshtastic_socket import Meshtastic
+from meshnet.meshtastic_core import Meshtastic
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
