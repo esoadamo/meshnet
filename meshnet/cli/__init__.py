@@ -136,12 +136,27 @@ def _cmd_show(_args: argparse.Namespace) -> None:
         print("Error: --config is required for show", file=sys.stderr)
         sys.exit(1)
 
+    import json
+    import time
+
     from meshnet.vpn.config import parse_config
     from meshnet.vpn.crypto import KeyPair
 
     cfg = parse_config(config_path)
     iface = cfg.interface
     local_kp = KeyPair.from_private_bytes(iface.private_key)
+
+    # Try to load runtime peer status from the daemon.
+    peer_status: dict[str, dict[str, object]] = {}
+    status_file = PID_DIR / "status.json"
+    try:
+        with open(status_file) as f:
+            status = json.load(f)
+        peer_status = status.get("peers", {})
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+
+    now = time.time()
 
     print(f"interface: {iface.tap_name}")
     print(f"  public key: {local_kp.public_base64()}")
@@ -158,6 +173,15 @@ def _cmd_show(_args: argparse.Namespace) -> None:
         print(f"  allowed ips: {allowed}")
         if peer.preshared_key:
             print("  preshared key: (set)")
+
+        info = peer_status.get(peer.endpoint, {})
+        last_rx = info.get("last_rx")
+        if isinstance(last_rx, (int, float)) and last_rx > 0:
+            ago = int(now - last_rx)
+            print(f"  last seen: {ago} seconds ago")
+        else:
+            print("  last seen: never")
+
         print()
 
 
@@ -177,6 +201,10 @@ def main() -> None:
         prog="meshnet",
         description="MeshNet: WireGuard-like VPN over Meshtastic mesh radio",
     )
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
+    if parser.parse_known_args()[0].verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
     sub = parser.add_subparsers(dest="command")
 
     # meshnet genkey

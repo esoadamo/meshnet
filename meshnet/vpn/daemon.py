@@ -14,7 +14,11 @@ Three concurrent tasks:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from meshtastic import portnums_pb2
@@ -38,15 +42,20 @@ log = logging.getLogger(__name__)
 IP_TUNNEL_APP: int = portnums_pb2.PortNum.IP_TUNNEL_APP
 PRIVATE_APP: int = portnums_pb2.PortNum.PRIVATE_APP
 
-# Inter-fragment send delay (seconds).  Meshtastic can handle roughly one
-# packet every 2-3 seconds; this keeps us below the radio's duty-cycle limit.
-INTER_FRAGMENT_DELAY: float = 2.0
+# Meshtastic is handling delay in accordance with local regulations,
+# but we can be a bit more aggressive with inter-fragment delay since we're on a wired TAP link and want to minimize latency.
+INTER_FRAGMENT_DELAY: float = 0.01
 
 # How often the handshake manager polls (seconds).
 HANDSHAKE_POLL_INTERVAL: float = 5.0
 
 # How often to garbage-collect stale reassembly buffers (seconds).
 FRAGMENT_GC_INTERVAL: float = 10.0
+
+# How often to write the peer status file (seconds).
+STATUS_WRITE_INTERVAL: float = 5.0
+
+STATUS_DIR = Path("/run/meshnet")
 
 
 class MeshVPN:
@@ -120,6 +129,7 @@ class MeshVPN:
             asyncio.create_task(self._tap_to_mesh_loop(), name="tap→mesh"),
             asyncio.create_task(self._mesh_to_tap_loop(), name="mesh→tap"),
             asyncio.create_task(self._handshake_manager(), name="handshake"),
+            asyncio.create_task(self._status_writer(), name="status"),
         ]
         log.info("MeshVPN running — %d peer(s) configured", len(cfg.peers))
 
@@ -143,6 +153,7 @@ class MeshVPN:
             self._tap.close()
         if self._mesh:
             self._mesh.close()
+        (STATUS_DIR / "status.json").unlink(missing_ok=True)
         log.info("MeshVPN stopped")
 
     # -- TAP → mesh ---------------------------------------------------------
@@ -163,8 +174,22 @@ class MeshVPN:
                 continue  # no route — silently drop
 
             session = self._sessions.get(peer_id)
-            if session is None or not session.is_established:
-                log.debug("Dropping frame — no session for %s", peer_id)
+            if session is None:
+                continue
+
+            # Trigger handshake on demand when IDLE.
+            if session.state == SessionState.IDLE:
+                try:
+                    init_bytes = session.initiate_handshake()
+                    asyncio.create_task(
+                        self._send_raw(peer_id, init_bytes, want_ack=True)
+                    )
+                except Exception as exc:
+                    log.warning("Handshake initiation failed for %s: %s", peer_id, exc)
+                continue
+
+            if not session.is_established:
+                log.debug("Dropping frame — session not ready for %s", peer_id)
                 continue
 
             try:
@@ -199,7 +224,12 @@ class MeshVPN:
             try:
                 await self._process_incoming(sender, data)
             except Exception as exc:
-                log.warning("Error processing packet from %s: %s", sender, exc)
+                log.warning(
+                    "Error processing packet from %s: %s: %s",
+                    sender,
+                    type(exc).__name__,
+                    exc,
+                )
 
     async def _process_incoming(self, sender: str, data: bytes) -> None:
         """Parse an incoming mesh packet and dispatch by type."""
@@ -210,6 +240,36 @@ class MeshVPN:
             if session is None:
                 log.warning("HandshakeInit from unknown peer %s", sender)
                 return
+
+            # Collision: both sides sent HandshakeInit simultaneously.
+            # Use public-key comparison as a deterministic tiebreaker.
+            if session.state == SessionState.INIT_SENT:
+                local_pub = session.local_keypair.public_bytes()
+                peer_pub = session.peer_static_public.public_bytes_raw()
+                if local_pub < peer_pub:
+                    # We have the lower key → we stay as initiator, ignore theirs.
+                    log.info(
+                        "Handshake collision with %s — staying initiator (tiebreaker)",
+                        sender,
+                    )
+                    return
+                log.info(
+                    "Handshake collision with %s — becoming responder (tiebreaker)",
+                    sender,
+                )
+
+            # Ignore retransmissions of an init we already responded to.
+            if (
+                session.state == SessionState.ESTABLISHED
+                and pkt.sender_session == session._remote_session_id
+            ):
+                log.debug(
+                    "Ignoring duplicate HandshakeInit from %s (session=%08x already established)",
+                    sender,
+                    pkt.sender_session,
+                )
+                return
+
             response_bytes = session.respond_to_handshake(pkt)
             await self._send_raw(sender, response_bytes, want_ack=True)
 
@@ -218,7 +278,21 @@ class MeshVPN:
             if session is None:
                 log.warning("HandshakeResponse from unknown peer %s", sender)
                 return
-            session.complete_handshake(pkt)
+            if session.state != SessionState.INIT_SENT:
+                log.debug(
+                    "Ignoring stale HandshakeResponse from %s (state=%s)",
+                    sender,
+                    session.state.value,
+                )
+                return
+            try:
+                session.complete_handshake(pkt)
+            except ValueError as exc:
+                log.info(
+                    "Ignoring HandshakeResponse from %s: %s",
+                    sender,
+                    exc,
+                )
 
         elif isinstance(pkt, TransportData):
             session = self._sessions.get(sender)
@@ -242,10 +316,19 @@ class MeshVPN:
     # -- handshake manager --------------------------------------------------
 
     async def _handshake_manager(self) -> None:
-        """Periodically initiate handshakes for idle or expired sessions."""
+        """Manage handshake timeouts and rekeying (handshakes are demand-driven)."""
         while True:
             for session in self._sessions.values():
-                if session.state == SessionState.IDLE or session.needs_rekey():
+                # Time out stale INIT_SENT states so we can retry on next data.
+                if session.init_timed_out():
+                    log.info(
+                        "Handshake INIT_SENT timed out for %s — resetting to IDLE",
+                        session.peer_node_id,
+                    )
+                    session.reset_to_idle()
+
+                # Proactively rekey established sessions before they expire.
+                if session.needs_rekey():
                     try:
                         init_bytes = session.initiate_handshake()
                         await self._send_raw(
@@ -253,11 +336,38 @@ class MeshVPN:
                         )
                     except Exception as exc:
                         log.warning(
-                            "Handshake initiation failed for %s: %s",
+                            "Rekey initiation failed for %s: %s",
                             session.peer_node_id,
                             exc,
                         )
             await asyncio.sleep(HANDSHAKE_POLL_INTERVAL)
+
+    # -- status writer ------------------------------------------------------
+
+    async def _status_writer(self) -> None:
+        """Periodically write peer status to a JSON file for ``meshnet show``."""
+        status_file = STATUS_DIR / "status.json"
+        while True:
+            await asyncio.sleep(STATUS_WRITE_INTERVAL)
+            peers: dict[str, dict[str, object]] = {}
+            for node_id, session in self._sessions.items():
+                peers[node_id] = {
+                    "state": session.state.value,
+                    "last_rx": session.last_rx,
+                }
+            status = {"peers": peers}
+            try:
+                STATUS_DIR.mkdir(parents=True, exist_ok=True)
+                fd = tempfile.NamedTemporaryFile(
+                    mode="w", dir=STATUS_DIR, delete=False, suffix=".tmp"
+                )
+                json.dump(status, fd)
+                fd.flush()
+                os.fsync(fd.fileno())
+                fd.close()
+                os.replace(fd.name, str(status_file))
+            except OSError as exc:
+                log.debug("Failed to write status file: %s", exc)
 
     # -- low-level send -----------------------------------------------------
 
@@ -265,7 +375,7 @@ class MeshVPN:
         self, node_id: str, data: bytes, want_ack: bool = False
     ) -> None:
         """Send raw bytes to a mesh node on the IP_TUNNEL_APP port."""
-        retry_count = 2 if want_ack else None
+        retry_count: int | None = 2 if want_ack else None
         try:
             await self._mesh._send_data_with_ack(
                 payload=data,

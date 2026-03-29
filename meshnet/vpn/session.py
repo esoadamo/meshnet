@@ -48,6 +48,7 @@ log = logging.getLogger(__name__)
 REKEY_AFTER_SECONDS: int = 300  # 5 minutes
 REKEY_AFTER_MESSAGES: int = 2**16
 REJECT_AFTER_MESSAGES: int = 2**64 - 1
+INIT_TIMEOUT_SECONDS: int = 30  # drop back to IDLE if no response
 
 
 class SessionState(Enum):
@@ -93,6 +94,8 @@ class PeerSession:
         self._ephemeral_keypair: KeyPair | None = None
         self._peer_ephemeral_public: X25519PublicKey | None = None
         self._established_at: float = 0.0
+        self._init_sent_at: float = 0.0
+        self.last_rx: float = 0.0  # wall-clock time of last received packet
 
     # -- initiator side -----------------------------------------------------
 
@@ -118,6 +121,7 @@ class PeerSession:
             mac=tag,
         )
         self.state = SessionState.INIT_SENT
+        self._init_sent_at = time.monotonic()
         log.info("Handshake INIT → %s (session=%08x)", self.peer_node_id, self._local_session_id)
         return pkt.serialize()
 
@@ -171,8 +175,9 @@ class PeerSession:
 
         # Clear ephemeral material.
         self._ephemeral_keypair = None
+        self.last_rx = time.time()
         log.info(
-            "Handshake COMPLETE with %s (local=%08x, remote=%08x)",
+            "Handshake ESTABLISHED with %s (local=%08x, remote=%08x) [initiator]",
             self.peer_node_id,
             self._local_session_id,
             self._remote_session_id,
@@ -238,8 +243,9 @@ class PeerSession:
         self._recv_counter_window_floor = 0
         self._established_at = time.monotonic()
         self.state = SessionState.ESTABLISHED
+        self.last_rx = time.time()
         log.info(
-            "Handshake RESPOND → %s (local=%08x, remote=%08x)",
+            "Handshake ESTABLISHED with %s (local=%08x, remote=%08x) [responder]",
             self.peer_node_id,
             self._local_session_id,
             self._remote_session_id,
@@ -287,6 +293,8 @@ class PeerSession:
 
         frame = decrypt(self.recv_key, data.counter, data.ciphertext)
 
+        self.last_rx = time.time()
+
         # Track this counter in the sliding window.
         self._recv_counter_seen.add(data.counter)
         self.recv_counter_max = max(self.recv_counter_max, data.counter)
@@ -313,6 +321,18 @@ class PeerSession:
         if time.monotonic() - self._established_at >= REKEY_AFTER_SECONDS:
             return True
         return False
+
+    def init_timed_out(self) -> bool:
+        """``True`` when INIT_SENT has timed out waiting for a response."""
+        if self.state != SessionState.INIT_SENT:
+            return False
+        return time.monotonic() - self._init_sent_at >= INIT_TIMEOUT_SECONDS
+
+    def reset_to_idle(self) -> None:
+        """Reset session state to IDLE, clearing handshake temporaries."""
+        self.state = SessionState.IDLE
+        self._ephemeral_keypair = None
+        self._init_sent_at = 0.0
 
     @property
     def is_established(self) -> bool:
