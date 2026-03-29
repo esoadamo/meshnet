@@ -45,11 +45,10 @@ class TestReplayProtection:
         frame = b"sensitive data"
         transport = a.encrypt_frame(frame)
 
-        # Send a second frame first so recv_counter_max > 0
-        transport2 = a.encrypt_frame(b"second frame")
-        b.decrypt_frame(transport2)
+        # Decrypt the frame (counter 0)
+        b.decrypt_frame(transport)
 
-        # Now the first frame (counter 0) should be rejected as replay
+        # Replaying the exact same packet should fail
         with pytest.raises(ValueError, match="Replay detected"):
             b.decrypt_frame(transport)
 

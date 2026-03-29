@@ -16,6 +16,8 @@ import os
 import struct
 import subprocess
 
+import re
+
 log = logging.getLogger(__name__)
 
 # ioctl constants (Linux specific).
@@ -23,11 +25,20 @@ TUNSETIFF: int = 0x400454CA
 IFF_TAP: int = 0x0002
 IFF_NO_PI: int = 0x1000  # no extra 4-byte packet-info header
 
+# Allowed interface name pattern: alphanumeric + hyphens, 1-15 characters.
+_IFACE_NAME_RE = re.compile(r"^[a-zA-Z0-9][-a-zA-Z0-9]{0,14}$")
+
 
 class TapDevice:
     """Async-friendly Linux TAP device."""
 
     def __init__(self, name: str = "mesh0", mtu: int = 180) -> None:
+        if not _IFACE_NAME_RE.match(name):
+            raise ValueError(
+                f"Invalid TAP device name {name!r}: must be 1-15 alphanumeric/hyphen characters"
+            )
+        if not (1 <= mtu <= 65535):
+            raise ValueError(f"MTU out of range: {mtu}")
         self._name: str = name
         self._mtu: int = mtu
         self._fd: int = -1
