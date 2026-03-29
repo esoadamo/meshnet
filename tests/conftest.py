@@ -47,8 +47,7 @@ def _make_config_text(
     address: str = "10.0.0.1/24",
     mtu: int = 180,
     tap_name: str = "mesh0",
-    meshtastic_host: str = "10.1.5.3",
-    meshtastic_port: int = 4403,
+    meshtastic_connect: str = "tcp://10.1.5.3:4403",
     peers: list[dict] | None = None,
 ) -> str:
     """Build a valid MeshNet config string."""
@@ -58,8 +57,7 @@ def _make_config_text(
         f"Address = {address}",
         f"MTU = {mtu}",
         f"TapName = {tap_name}",
-        f"MeshtasticHost = {meshtastic_host}",
-        f"MeshtasticPort = {meshtastic_port}",
+        f"MeshtasticConnect = {meshtastic_connect}",
         "",
     ]
     if peers is None:

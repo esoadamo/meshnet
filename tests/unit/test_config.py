@@ -35,8 +35,7 @@ class TestParseConfigValid:
         assert iface.address == ipaddress.IPv4Interface("10.0.0.1/24")
         assert iface.mtu == 180
         assert iface.tap_name == "mesh0"
-        assert iface.meshtastic_host == "10.1.5.3"
-        assert iface.meshtastic_port == 4403
+        assert iface.meshtastic_connect == "tcp://10.1.5.3:4403"
 
     def test_peer_fields(self, config_file: Path):
         cfg = parse_config(config_file)
@@ -107,7 +106,7 @@ class TestParseConfigValid:
             "[Interface]\n"
             f"PrivateKey = {kp.private_base64()}\n"
             "Address = 10.0.0.1/24\n"
-            "MeshtasticHost = 10.1.5.3\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403\n"
             "\n"
             "[Peer]\n"
             f"PublicKey = {peer.public_base64()}\n"
@@ -132,7 +131,7 @@ class TestParseConfigValid:
             f"PrivateKey = {kp.private_base64()}\n"
             "Address = 10.0.0.1/24\n"
             "# Another comment\n"
-            "MeshtasticHost = 10.1.5.3\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403\n"
             "\n"
             "[Peer]\n"
             f"PublicKey = {peer.public_base64()}\n"
@@ -144,7 +143,7 @@ class TestParseConfigValid:
             f.flush()
             cfg = parse_config(f.name)
         os.unlink(f.name)
-        assert cfg.interface.meshtastic_host == "10.1.5.3"
+        assert cfg.interface.meshtastic_connect == "tcp://10.1.5.3:4403"
 
 
 class TestParseConfigErrors:
@@ -177,11 +176,11 @@ class TestParseConfigErrors:
             "[Interface]\n"
             f"PrivateKey = {kp.private_base64()}\n"
             "Address = 10.0.0.1/24\n"
-            "MeshtasticHost = 10.1.5.3\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403\n"
             "[Interface]\n"
             f"PrivateKey = {kp.private_base64()}\n"
             "Address = 10.0.0.1/24\n"
-            "MeshtasticHost = 10.1.5.3\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403\n"
             "[Peer]\n"
             f"PublicKey = {peer.public_base64()}\n"
             "AllowedIPs = 10.0.0.2/32\n"
@@ -196,7 +195,7 @@ class TestParseConfigErrors:
             "[Interface]\n"
             f"PrivateKey = {kp.private_base64()}\n"
             "Address = 10.0.0.1/24\n"
-            "MeshtasticHost = 10.1.5.3\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403\n"
         )
         with pytest.raises(ValueError, match="At least one.*Peer"):
             self._write_and_parse(text)
@@ -207,7 +206,7 @@ class TestParseConfigErrors:
             "[Interface]\n"
             f"PrivateKey = {kp.private_base64()}\n"
             "Address = 10.0.0.1/24\n"
-            "MeshtasticHost = 10.1.5.3\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403\n"
             "[Bogus]\n"
             "Key = value\n"
         )
@@ -221,7 +220,7 @@ class TestParseConfigErrors:
             "[Interface]\n"
             f"PrivateKey = {bad_key}\n"
             "Address = 10.0.0.1/24\n"
-            "MeshtasticHost = 10.1.5.3\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403\n"
             "[Peer]\n"
             f"PublicKey = {peer.public_base64()}\n"
             "AllowedIPs = 10.0.0.2/32\n"
@@ -237,7 +236,7 @@ class TestParseConfigErrors:
             "[Interface]\n"
             f"PrivateKey = {kp.private_base64()}\n"
             "Address = 10.0.0.1/24\n"
-            "MeshtasticHost = 10.1.5.3\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403\n"
             "[Peer]\n"
             f"PublicKey = {bad_pub}\n"
             "AllowedIPs = 10.0.0.2/32\n"
@@ -253,7 +252,7 @@ class TestParseConfigErrors:
             "[Interface]\n"
             f"PrivateKey = {kp.private_base64()}\n"
             "Address = 10.0.0.1/24\n"
-            "MeshtasticHost = 10.1.5.3\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403\n"
             "[Peer]\n"
             f"PublicKey = {peer.public_base64()}\n"
             "AllowedIPs = 10.0.0.2/32\n"
@@ -267,7 +266,7 @@ class TestParseConfigErrors:
         text = (
             "[Interface]\n"
             "Address = 10.0.0.1/24\n"
-            "MeshtasticHost = 10.1.5.3\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403\n"
             "[Peer]\n"
             f"PublicKey = {peer.public_base64()}\n"
             "AllowedIPs = 10.0.0.2/32\n"

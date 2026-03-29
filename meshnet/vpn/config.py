@@ -4,6 +4,13 @@ Handles the ``[Interface]`` section and multiple ``[Peer]`` sections.
 Standard ``configparser`` cannot handle duplicate section names, so we
 parse the file manually by splitting on section headers.
 
+The ``MeshtasticConnect`` field uses a URI-style value to describe how to
+reach the Meshtastic radio.  Supported schemes:
+
+* ``tcp://hostname:port`` — TCP connection (port defaults to 4403).
+* ``serial:///dev/ttyUSB0`` — Linux serial port.
+* ``serial://COM3`` — Windows COM port.
+
 Example configuration::
 
     [Interface]
@@ -11,8 +18,7 @@ Example configuration::
     Address = 10.0.0.1/24
     MTU = 180
     TapName = mesh0
-    MeshtasticHost = 10.1.5.3
-    MeshtasticPort = 4403
+    MeshtasticConnect = tcp://10.1.5.3:4403
 
     [Peer]
     PublicKey = <base64 X25519 public key>
@@ -28,6 +34,7 @@ import ipaddress
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,8 +45,7 @@ class InterfaceConfig:
     address: ipaddress.IPv4Interface | ipaddress.IPv6Interface
     mtu: int
     tap_name: str
-    meshtastic_host: str
-    meshtastic_port: int
+    meshtastic_connect: str  # URI e.g. tcp://host:port or serial:///dev/ttyUSB0
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,13 +120,19 @@ def _parse_interface(kv: dict[str, str]) -> InterfaceConfig:
     except ipaddress.AddressValueError:
         address = ipaddress.IPv6Interface(addr_str)
 
+    connect = kv["MeshtasticConnect"]
+    parsed = urlparse(connect)
+    if parsed.scheme not in ("tcp", "serial"):
+        raise ValueError(
+            f"MeshtasticConnect must use tcp:// or serial:// scheme, got: {connect!r}"
+        )
+
     return InterfaceConfig(
         private_key=raw_key,
         address=address,
         mtu=int(kv.get("MTU", "180")),
         tap_name=kv.get("TapName", "mesh0"),
-        meshtastic_host=kv["MeshtasticHost"],
-        meshtastic_port=int(kv.get("MeshtasticPort", "4403")),
+        meshtastic_connect=connect,
     )
 
 

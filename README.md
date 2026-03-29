@@ -94,8 +94,7 @@ PrivateKey = <base64 private key>
 Address = 10.0.0.1/24
 MTU = 180
 TapName = mesh0
-MeshtasticHost = 10.1.5.3
-MeshtasticPort = 4403
+MeshtasticConnect = tcp://10.1.5.3:4403
 
 [Peer]
 PublicKey = <peer's base64 public key>
@@ -134,8 +133,15 @@ meshnet down
 | `Address` | ✅ | — | Local IP address with CIDR prefix (e.g. `10.0.0.1/24`) |
 | `MTU` | ❌ | `180` | TAP device MTU (constrained by Meshtastic payload size) |
 | `TapName` | ❌ | `mesh0` | Linux TAP interface name |
-| `MeshtasticHost` | ✅ | — | IP address of the Meshtastic device |
-| `MeshtasticPort` | ❌ | `4403` | TCP port for Meshtastic connection |
+| `MeshtasticConnect` | ✅ | — | Connection URI for the Meshtastic device (see below) |
+
+**`MeshtasticConnect` URI schemes:**
+
+| Scheme | Example | Description |
+|---|---|---|
+| `tcp://` | `tcp://10.1.5.3:4403` | TCP connection (port defaults to `4403`) |
+| `serial://` | `serial:///dev/ttyUSB0` | Linux serial port |
+| `serial://` | `serial://COM3` | Windows COM port |
 
 ### `[Peer]` section (one or more)
 

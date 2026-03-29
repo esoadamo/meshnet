@@ -83,10 +83,7 @@ class MeshVPN:
         # Connect to the meshtastic radio.
         from meshnet.meshtastic_core import Meshtastic
 
-        self._mesh = Meshtastic(
-            ip=cfg.interface.meshtastic_host,
-            port=cfg.interface.meshtastic_port,
-        )
+        self._mesh = Meshtastic(cfg.interface.meshtastic_connect)
         await self._mesh.connect()
         log.info("Meshtastic connected")
 
