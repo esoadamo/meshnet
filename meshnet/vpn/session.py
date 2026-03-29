@@ -337,3 +337,85 @@ class PeerSession:
     @property
     def is_established(self) -> bool:
         return self.state == SessionState.ESTABLISHED
+
+
+# ---------------------------------------------------------------------------
+# AES-GCM PSK-only session (no handshake)
+# ---------------------------------------------------------------------------
+
+
+class AesPeerSession:
+    """Encrypts/decrypts frames using a shared PSK with AES-256-GCM.
+
+    No handshake is performed — the session is immediately ESTABLISHED.
+    Both sides use the same key for both directions; replay protection
+    is identical to :class:`PeerSession`.
+    """
+
+    _REPLAY_WINDOW_SIZE: int = 256
+
+    def __init__(self, peer_node_id: str, preshared_key: bytes) -> None:
+        if len(preshared_key) != 32:
+            raise ValueError("AES PSK must be exactly 32 bytes")
+        self.peer_node_id: str = peer_node_id
+        self._key: bytes = preshared_key
+
+        self.state: SessionState = SessionState.ESTABLISHED
+        self.recv_counter_max: int = 0
+        self._recv_counter_seen: set[int] = set()
+        self._recv_counter_window_floor: int = 0
+        self.last_rx: float = 0.0
+
+        log.info("AES-GCM session ready for %s (PSK mode, no handshake)", peer_node_id)
+
+    # -- encrypt / decrypt --------------------------------------------------
+
+    def encrypt_frame(self, frame: bytes) -> TransportData:
+        nonce_int = time.time_ns()
+        nonce = nonce_int.to_bytes(8, "little") + b"\x00" * 4
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        ct = AESGCM(self._key).encrypt(nonce, frame, associated_data=None)
+        return TransportData(counter=nonce_int, ciphertext=ct)
+
+    def decrypt_frame(self, data: TransportData) -> bytes:
+        if data.counter in self._recv_counter_seen:
+            raise ValueError(f"Replay detected: counter {data.counter} already seen")
+        if data.counter < self._recv_counter_window_floor:
+            raise ValueError(
+                f"Replay detected: counter {data.counter} below window floor "
+                f"{self._recv_counter_window_floor}"
+            )
+
+        nonce = data.counter.to_bytes(8, "little") + b"\x00" * 4
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        frame = AESGCM(self._key).decrypt(nonce, data.ciphertext, associated_data=None)
+
+        self.last_rx = time.time()
+        self._recv_counter_seen.add(data.counter)
+        self.recv_counter_max = max(self.recv_counter_max, data.counter)
+
+        if len(self._recv_counter_seen) > self._REPLAY_WINDOW_SIZE:
+            new_floor = self.recv_counter_max - self._REPLAY_WINDOW_SIZE + 1
+            self._recv_counter_seen = {
+                c for c in self._recv_counter_seen if c >= new_floor
+            }
+            self._recv_counter_window_floor = new_floor
+
+        return frame
+
+    # -- stub interface for daemon compatibility ----------------------------
+
+    @property
+    def is_established(self) -> bool:
+        return True
+
+    def needs_rekey(self) -> bool:
+        return False
+
+    def init_timed_out(self) -> bool:
+        return False
+
+    def reset_to_idle(self) -> None:
+        pass

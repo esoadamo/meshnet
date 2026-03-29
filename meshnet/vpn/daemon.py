@@ -26,7 +26,7 @@ from meshtastic import portnums_pb2
 from meshnet.vpn.config import MeshnetConfig, parse_config
 from meshnet.vpn.crypto import KeyPair
 from meshnet.vpn.routing import RoutingTable
-from meshnet.vpn.session import PeerSession, SessionState
+from meshnet.vpn.session import AesPeerSession, PeerSession, SessionState
 from meshnet.vpn.tap import TapDevice
 from meshnet.vpn.transport import (
     Fragmenter,
@@ -69,7 +69,7 @@ class MeshVPN:
         self._mesh: Any = None  # meshtastic_socket.Meshtastic
         self._tap: TapDevice | None = None
         self._routing: RoutingTable = RoutingTable()
-        self._sessions: dict[str, PeerSession] = {}
+        self._sessions: dict[str, PeerSession | AesPeerSession] = {}
         self._fragmenter: Fragmenter = Fragmenter()
         self._vpn_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._unregister_listener: Any = None
@@ -117,12 +117,19 @@ class MeshVPN:
         for peer in cfg.peers:
             for network in peer.allowed_ips:
                 self._routing.add_route(network, peer.endpoint)
-            self._sessions[peer.endpoint] = PeerSession(
-                peer_node_id=peer.endpoint,
-                peer_static_public=peer.public_key,
-                local_keypair=local_kp,
-                preshared_key=peer.preshared_key,
-            )
+            if peer.mode == "AES":
+                assert peer.preshared_key is not None
+                self._sessions[peer.endpoint] = AesPeerSession(
+                    peer_node_id=peer.endpoint,
+                    preshared_key=peer.preshared_key,
+                )
+            else:
+                self._sessions[peer.endpoint] = PeerSession(
+                    peer_node_id=peer.endpoint,
+                    peer_static_public=peer.public_key,
+                    local_keypair=local_kp,
+                    preshared_key=peer.preshared_key,
+                )
 
         # Launch the three concurrent loops.
         self._tasks = [
@@ -239,6 +246,9 @@ class MeshVPN:
             session = self._sessions.get(sender)
             if session is None:
                 log.warning("HandshakeInit from unknown peer %s", sender)
+                return
+            if isinstance(session, AesPeerSession):
+                log.debug("Ignoring HandshakeInit from %s (AES mode)", sender)
                 return
 
             # Collision: both sides sent HandshakeInit simultaneously.
@@ -376,6 +386,10 @@ class MeshVPN:
     ) -> None:
         """Send raw bytes to a mesh node on the IP_TUNNEL_APP port."""
         retry_count: int | None = 2 if want_ack else None
+        # Handshakes use RELIABLE (=70) priority to get through;
+        # transport data uses DEFAULT (=64) to avoid unnecessary
+        # radio-level retransmission overhead.
+        priority = 70 if want_ack else 64
         try:
             await self._mesh._send_data_with_ack(
                 payload=data,
@@ -385,6 +399,7 @@ class MeshVPN:
                 retry_count=retry_count,
                 ack_timeout=15.0,
                 pki_encrypted=False,  # MeshNet handles its own encryption
+                priority=priority,
             )
         except ConnectionError as exc:
             log.warning("Send to %s failed: %s", node_id, exc)

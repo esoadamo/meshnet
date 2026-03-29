@@ -252,6 +252,7 @@ class Meshtastic:
         retry_count: int | None = None,
         ack_timeout: float = 15.0,
         pki_encrypted: bool = False,
+        priority: int | None = None,
     ) -> Any:
         """Core send loop shared by :class:`ChannelSocket` and :class:`PeerSocket`.
 
@@ -262,6 +263,7 @@ class Meshtastic:
         :param retry_count: Number of retries on timeout.
         :param ack_timeout: Wait time for an ACK.
         :param pki_encrypted: Whether to use PKI encryption.
+        :param priority: Meshtastic packet priority (None = library default).
         :return: The sent packet object from the radio.
         :raises ConnectionError: If not connected, or if an ACK is not received.
         """
@@ -279,15 +281,20 @@ class Meshtastic:
 
             dest = destination_id  # local ref avoids late-binding in lambda
             ch = channel_index
+            send_kwargs: dict[str, Any] = {
+                "destinationId": dest,
+                "portNum": port_num,
+                "channelIndex": ch,
+                "wantAck": want_ack,
+                "pkiEncrypted": pki_encrypted,
+            }
+            if priority is not None:
+                send_kwargs["priority"] = priority
             packet = await self._loop.run_in_executor(
                 None,
                 lambda: self.interface.sendData(
                     encoded_payload,
-                    destinationId=dest,
-                    portNum=port_num,
-                    channelIndex=ch,
-                    wantAck=want_ack,
-                    pkiEncrypted=pki_encrypted,
+                    **send_kwargs,
                 ),
             )
 
