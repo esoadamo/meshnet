@@ -1,9 +1,15 @@
 """
-Meshtastic TCP client with channel-based and peer-to-peer communication.
+Meshtastic client with channel-based and peer-to-peer communication.
+
+Supports TCP and serial connections via a URI string:
+
+* ``tcp://hostname:port`` — TCP (port defaults to 4403)
+* ``serial:///dev/ttyUSB0`` — Linux serial port
+* ``serial://COM3`` — Windows COM port
 
 Usage::
 
-    mesh = Meshtastic(ip="10.1.5.3")
+    mesh = Meshtastic("tcp://10.1.5.3:4403")
     await mesh.connect()
 
     ch   = mesh.channel("jacomms")          # broadcast on a named channel
@@ -20,30 +26,47 @@ Usage::
 """
 import asyncio
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 from pubsub import pub
 from meshtastic import tcp_interface, portnums_pb2
 
+_DEFAULT_TCP_PORT = 4403
+
+
+@runtime_checkable
+class MeshtasticInterface(Protocol):
+    """Minimal interface shared by TCPInterface and SerialInterface."""
+
+    localNode: Any
+    nodes: dict[str, Any]
+
+    def sendData(self, data: bytes, **kwargs: Any) -> Any: ...
+    def close(self) -> None: ...
+
 
 class Meshtastic:
     """
-    Entry point for Meshtastic communication over TCP.
+    Entry point for Meshtastic communication.
 
+    Supports TCP (``tcp://``) and serial (``serial://``) connections.
     Manages the connection, ACK tracking and dispatches incoming text
     packets to registered :class:`ChannelSocket` / :class:`PeerSocket`
     listeners.
     """
 
-    def __init__(self, ip: str, port: int = 4403) -> None:
+    def __init__(self, connect: str) -> None:
         """Initialize the Meshtastic client.
 
-        :param ip: The IP address of the Meshtastic device.
-        :param port: The TCP port of the Meshtastic device.
+        :param connect: Connection URI.  Supported schemes:
+
+            * ``tcp://hostname:port`` — TCP connection (port defaults to 4403).
+            * ``serial:///dev/ttyUSB0`` — Linux serial port.
+            * ``serial://COM3`` — Windows COM port.
         """
-        self.hostname: str = ip
-        self.port: int = port
-        self.interface: tcp_interface.TCPInterface | None = None
+        self._connect: str = connect
+        self.interface: MeshtasticInterface | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected: bool = False
         self._ack_futures: dict[int, asyncio.Future[bool]] = {}
@@ -55,15 +78,42 @@ class Meshtastic:
     # ------------------------------------------------------------------
 
     async def connect(self) -> None:
-        """Establish a TCP connection to the Meshtastic device."""
+        """Establish a connection to the Meshtastic device."""
         self._loop = asyncio.get_running_loop()
-        logging.info("Connecting to %s:%s", self.hostname, self.port)
-        self.interface = await self._loop.run_in_executor(
-            None,
-            lambda: tcp_interface.TCPInterface(
-                hostname=self.hostname, portNumber=self.port
-            ),
-        )
+        parsed = urlparse(self._connect)
+        if parsed.scheme == "tcp":
+            hostname = parsed.hostname
+            if not hostname:
+                raise ValueError(
+                    f"tcp:// URI must include a hostname, got: {self._connect!r}"
+                )
+            port = parsed.port if parsed.port is not None else _DEFAULT_TCP_PORT
+            logging.info("Connecting via TCP to %s:%s", hostname, port)
+            self.interface = await self._loop.run_in_executor(
+                None,
+                lambda: tcp_interface.TCPInterface(
+                    hostname=hostname, portNumber=port
+                ),
+            )
+        elif parsed.scheme == "serial":
+            from meshtastic import serial_interface
+            # serial:///dev/ttyUSB0 → path='/dev/ttyUSB0', netloc=''
+            # serial://COM3        → netloc='COM3', path=''
+            dev_path = parsed.path if parsed.path else parsed.netloc
+            if not dev_path or dev_path == "/":
+                raise ValueError(
+                    f"serial:// URI must include a device path, got: {self._connect!r}"
+                )
+            logging.info("Connecting via serial to %s", dev_path)
+            self.interface = await self._loop.run_in_executor(
+                None,
+                lambda: serial_interface.SerialInterface(devPath=dev_path),
+            )
+        else:
+            raise ValueError(
+                f"Unsupported connection scheme {parsed.scheme!r} in {self._connect!r}; "
+                "use tcp:// or serial://"
+            )
         self._connected = True
         # TEXT_MESSAGE_APP is published to receive.text in most library versions;
         # receive.data is kept as a catch-all for older builds.

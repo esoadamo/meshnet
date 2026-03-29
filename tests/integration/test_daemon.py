@@ -31,8 +31,7 @@ def _write_config(kp_local: KeyPair, kp_peer: KeyPair, tmp_dir: Path) -> Path:
         "Address = 10.0.0.1/24\n"
         "MTU = 180\n"
         "TapName = mesh0\n"
-        "MeshtasticHost = 127.0.0.1\n"
-        "MeshtasticPort = 4403\n"
+        "MeshtasticConnect = tcp://127.0.0.1:4403\n"
         "\n"
         "[Peer]\n"
         f"PublicKey = {kp_peer.public_base64()}\n"
@@ -47,9 +46,8 @@ def _write_config(kp_local: KeyPair, kp_peer: KeyPair, tmp_dir: Path) -> Path:
 class _MockMeshtastic:
     """Mock Meshtastic client for daemon integration tests."""
 
-    def __init__(self, ip: str, port: int = 4403):
-        self.ip = ip
-        self.port = port
+    def __init__(self, connect: str):
+        self.connect_uri = connect
         self.sent_packets: list[tuple[str, bytes]] = []
 
     async def connect(self):
@@ -103,7 +101,7 @@ class TestDaemonStartStop:
         kp_peer = KeyPair.generate()
         config_path = _write_config(kp_local, kp_peer, tmp_path)
 
-        mock_mesh = _MockMeshtastic(ip="127.0.0.1")
+        mock_mesh = _MockMeshtastic(connect="tcp://127.0.0.1:4403")
         mock_tap = _MockTapDevice()
 
         vpn = MeshVPN(str(config_path))
@@ -147,7 +145,7 @@ class TestDaemonProcessIncoming:
         # Manually set up just enough state
         vpn2 = MeshVPN(str(config_path))
         vpn2.config = None
-        vpn2._mesh = _MockMeshtastic("127.0.0.1")
+        vpn2._mesh = _MockMeshtastic("tcp://127.0.0.1:4403")
         vpn2._tap = _MockTapDevice()
         vpn2._routing = MagicMock()
         vpn2._fragmenter = MagicMock()

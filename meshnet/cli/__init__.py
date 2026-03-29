@@ -147,7 +147,7 @@ def _cmd_show(_args: argparse.Namespace) -> None:
     print(f"  public key: {local_kp.public_base64()}")
     print(f"  address: {iface.address}")
     print(f"  mtu: {iface.mtu}")
-    print(f"  meshtastic: {iface.meshtastic_host}:{iface.meshtastic_port}")
+    print(f"  meshtastic: {iface.meshtastic_connect}")
     print()
 
     for peer in cfg.peers:

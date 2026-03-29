@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 
 async def main():
-    mesh = Meshtastic(ip="10.1.5.3")
+    mesh = Meshtastic("tcp://10.1.5.3")
 
     try:
         await mesh.connect()

@@ -21,7 +21,7 @@ class TestMeshtasticClient:
             with patch("meshnet.meshtastic_core.pub") as mock_pub:
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 assert mesh._connected is True
                 assert mesh.interface is not None
@@ -34,7 +34,7 @@ class TestMeshtasticClient:
     async def test_require_connected_raises(self):
         from meshnet.meshtastic_core import Meshtastic
 
-        mesh = Meshtastic(ip="127.0.0.1")
+        mesh = Meshtastic("tcp://127.0.0.1")
         with pytest.raises(ConnectionError, match="Not connected"):
             mesh._require_connected()
 
@@ -42,7 +42,7 @@ class TestMeshtasticClient:
     async def test_channel_requires_connection(self):
         from meshnet.meshtastic_core import Meshtastic
 
-        mesh = Meshtastic(ip="127.0.0.1")
+        mesh = Meshtastic("tcp://127.0.0.1")
         with pytest.raises(ConnectionError):
             mesh.channel("test")
 
@@ -50,7 +50,7 @@ class TestMeshtasticClient:
     async def test_peer_requires_connection(self):
         from meshnet.meshtastic_core import Meshtastic
 
-        mesh = Meshtastic(ip="127.0.0.1")
+        mesh = Meshtastic("tcp://127.0.0.1")
         with pytest.raises(ConnectionError):
             mesh.peer("!aabbccdd")
 
@@ -61,7 +61,7 @@ class TestMeshtasticClient:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 idx = mesh._find_channel_index("jacomms")
                 assert idx == 0
@@ -73,7 +73,7 @@ class TestMeshtasticClient:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 with pytest.raises(ValueError, match="not found"):
                     mesh._find_channel_index("nonexistent")
@@ -85,7 +85,7 @@ class TestMeshtasticClient:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 assert mesh._resolve_node_id("!d45b9db8") == "!d45b9db8"
 
@@ -96,7 +96,7 @@ class TestMeshtasticClient:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 assert mesh._resolve_node_id("postar") == "!d45b9db8"
 
@@ -107,7 +107,7 @@ class TestMeshtasticClient:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 with pytest.raises(ValueError, match="not found"):
                     mesh._resolve_node_id("unknown_node")
@@ -123,7 +123,7 @@ class TestMeshtasticDispatch:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
 
                 queue: asyncio.Queue = asyncio.Queue()
@@ -154,7 +154,7 @@ class TestMeshtasticDispatch:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
 
                 queue: asyncio.Queue = asyncio.Queue()
@@ -176,7 +176,7 @@ class TestMeshtasticACK:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
 
                 fut = asyncio.get_running_loop().create_future()
@@ -200,7 +200,7 @@ class TestMeshtasticACK:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
 
                 fut = asyncio.get_running_loop().create_future()
@@ -225,7 +225,7 @@ class TestMeshtasticACK:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
 
                 # ACK arrives before future is registered
@@ -250,7 +250,7 @@ class TestChannelSocket:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 ch = mesh.channel("jacomms")
                 # Channel index 0 should match
@@ -264,7 +264,7 @@ class TestChannelSocket:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 ch = mesh.channel("jacomms")
                 result = await ch.recv(timeout=0.01)
@@ -277,7 +277,7 @@ class TestChannelSocket:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 ch = mesh.channel("jacomms")
                 assert ch.has_data() is False
@@ -291,7 +291,7 @@ class TestChannelSocket:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 ch = mesh.channel("jacomms")
                 listener_count = len(mesh._listeners)
@@ -309,7 +309,7 @@ class TestPeerSocket:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 peer = mesh.peer("!d45b9db8")
                 assert peer._filter({"fromId": "!d45b9db8"}) is True
@@ -322,7 +322,7 @@ class TestPeerSocket:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 peer = mesh.peer("postar")
                 assert peer.node_id == "!d45b9db8"
@@ -334,8 +334,72 @@ class TestPeerSocket:
             with patch("meshnet.meshtastic_core.pub"):
                 from meshnet.meshtastic_core import Meshtastic
 
-                mesh = Meshtastic(ip="127.0.0.1")
+                mesh = Meshtastic("tcp://127.0.0.1")
                 await mesh.connect()
                 peer = mesh.peer("!d45b9db8")
                 result = await peer.recv(timeout=0.01)
                 assert result is None
+
+
+class TestMeshtasticConnectURI:
+    """Tests for URI parsing and validation in connect()."""
+
+    @pytest.mark.asyncio
+    async def test_serial_connect_linux(self):
+        """serial:///dev/ttyUSB0 should pass devPath='/dev/ttyUSB0' to SerialInterface."""
+        from tests.conftest import _FakeSerialInterface
+
+        with patch("meshnet.meshtastic_core.pub"):
+            mock_serial = MagicMock()
+            mock_serial.SerialInterface = _FakeSerialInterface
+            with patch.dict("sys.modules", {"meshtastic.serial_interface": mock_serial}):
+                from meshnet.meshtastic_core import Meshtastic
+
+                mesh = Meshtastic("serial:///dev/ttyUSB0")
+                await mesh.connect()
+                assert mesh._connected is True
+                assert mesh.interface is not None
+                assert mesh.interface.devPath == "/dev/ttyUSB0"
+                mesh.close()
+
+    @pytest.mark.asyncio
+    async def test_serial_connect_windows(self):
+        """serial://COM3 should pass devPath='COM3' to SerialInterface."""
+        from tests.conftest import _FakeSerialInterface
+
+        with patch("meshnet.meshtastic_core.pub"):
+            mock_serial = MagicMock()
+            mock_serial.SerialInterface = _FakeSerialInterface
+            with patch.dict("sys.modules", {"meshtastic.serial_interface": mock_serial}):
+                from meshnet.meshtastic_core import Meshtastic
+
+                mesh = Meshtastic("serial://COM3")
+                await mesh.connect()
+                assert mesh._connected is True
+                assert mesh.interface is not None
+                assert mesh.interface.devPath == "COM3"
+                mesh.close()
+
+    @pytest.mark.asyncio
+    async def test_unsupported_scheme_raises(self):
+        from meshnet.meshtastic_core import Meshtastic
+
+        mesh = Meshtastic("http://10.1.5.3")
+        with pytest.raises(ValueError, match="Unsupported connection scheme"):
+            await mesh.connect()
+
+    @pytest.mark.asyncio
+    async def test_tcp_missing_hostname_raises(self):
+        from meshnet.meshtastic_core import Meshtastic
+
+        mesh = Meshtastic("tcp://:4403")
+        with pytest.raises(ValueError, match="hostname"):
+            await mesh.connect()
+
+    @pytest.mark.asyncio
+    async def test_serial_empty_device_raises(self):
+        from meshnet.meshtastic_core import Meshtastic
+
+        mesh = Meshtastic("serial://")
+        with pytest.raises(ValueError, match="device path"):
+            await mesh.connect()

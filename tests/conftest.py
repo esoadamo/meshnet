@@ -47,8 +47,7 @@ def _make_config_text(
     address: str = "10.0.0.1/24",
     mtu: int = 180,
     tap_name: str = "mesh0",
-    meshtastic_host: str = "10.1.5.3",
-    meshtastic_port: int = 4403,
+    meshtastic_connect: str = "tcp://10.1.5.3:4403",
     peers: list[dict] | None = None,
 ) -> str:
     """Build a valid MeshNet config string."""
@@ -58,8 +57,7 @@ def _make_config_text(
         f"Address = {address}",
         f"MTU = {mtu}",
         f"TapName = {tap_name}",
-        f"MeshtasticHost = {meshtastic_host}",
-        f"MeshtasticPort = {meshtastic_port}",
+        f"MeshtasticConnect = {meshtastic_connect}",
         "",
     ]
     if peers is None:
@@ -202,3 +200,29 @@ def fake_tcp_interface():
 def fake_packet():
     """Return a _FakePacket factory."""
     return _FakePacket
+
+
+class _FakeSerialInterface:
+    """Minimal stub replacing meshtastic.serial_interface.SerialInterface."""
+
+    def __init__(self, devPath: str = ""):
+        self.devPath = devPath
+        self.localNode = _FakeLocalNode()
+        self.nodes = {
+            "!d45b9db8": {"user": {"longName": "postar", "shortName": "PST"}},
+        }
+        self._next_id = 100
+
+    def sendData(self, data, **kwargs):
+        pkt = _FakePacket(self._next_id)
+        self._next_id += 1
+        return pkt
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def fake_serial_interface():
+    """Return a _FakeSerialInterface class for patching."""
+    return _FakeSerialInterface
