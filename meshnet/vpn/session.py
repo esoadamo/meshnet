@@ -23,7 +23,7 @@ from enum import Enum
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 
-from meshnet.crypto import (
+from meshnet.vpn.crypto import (
     KeyPair,
     decrypt,
     derive_transport_keys,
@@ -33,7 +33,7 @@ from meshnet.crypto import (
     mac_blake2s,
     verify_mac,
 )
-from meshnet.transport import (
+from meshnet.vpn.transport import (
     HandshakeInit,
     HandshakeResponse,
     TransportData,

@@ -21,7 +21,7 @@ import signal
 import sys
 from pathlib import Path
 
-from meshnet.crypto import KeyPair, generate_psk
+from meshnet.vpn.crypto import KeyPair, generate_psk
 
 PID_DIR = Path("/run/meshnet")
 
@@ -53,7 +53,7 @@ def _cmd_up(args: argparse.Namespace) -> None:
         print("Error: meshnet up requires root (for TAP device creation)", file=sys.stderr)
         sys.exit(1)
 
-    from meshnet.daemon import MeshVPN
+    from meshnet.vpn.daemon import MeshVPN
 
     config_path: str = args.config
     vpn = MeshVPN(config_path)
@@ -103,8 +103,8 @@ def _cmd_show(_args: argparse.Namespace) -> None:
         print("Error: --config is required for show", file=sys.stderr)
         sys.exit(1)
 
-    from meshnet.config import parse_config
-    from meshnet.crypto import KeyPair
+    from meshnet.vpn.config import parse_config
+    from meshnet.vpn.crypto import KeyPair
 
     cfg = parse_config(config_path)
     iface = cfg.interface
