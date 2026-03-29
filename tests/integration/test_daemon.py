@@ -144,8 +144,6 @@ class TestDaemonProcessIncoming:
         kp_peer = KeyPair.generate()
         config_path = _write_config(kp_local, kp_peer, tmp_path)
 
-        vpn = MeshVPN(str(config_path))
-        vpn.config = vpn.__class__.__new__(vpn.__class__)
         # Manually set up just enough state
         vpn2 = MeshVPN(str(config_path))
         vpn2.config = None
