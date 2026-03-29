@@ -127,6 +127,27 @@ def _parse_interface(kv: dict[str, str]) -> InterfaceConfig:
             f"MeshtasticConnect must use tcp:// or serial:// scheme, got: {connect!r}"
         )
 
+    # Scheme-specific validation to catch malformed URIs early.
+    if parsed.scheme == "tcp":
+        if not parsed.hostname:
+            raise ValueError(
+                f"MeshtasticConnect tcp:// URI must include a hostname, got: {connect!r}"
+            )
+        if parsed.path not in ("", "/") or parsed.params or parsed.query or parsed.fragment:
+            raise ValueError(
+                f"MeshtasticConnect tcp:// URI must not include path/query/fragment, got: {connect!r}"
+            )
+    elif parsed.scheme == "serial":
+        device = parsed.path or parsed.netloc
+        if not device or device == "/":
+            raise ValueError(
+                f"MeshtasticConnect serial:// URI must include a device path, got: {connect!r}"
+            )
+        if parsed.params or parsed.query or parsed.fragment:
+            raise ValueError(
+                f"MeshtasticConnect serial:// URI must not include query/fragment, got: {connect!r}"
+            )
+
     return InterfaceConfig(
         private_key=raw_key,
         address=address,

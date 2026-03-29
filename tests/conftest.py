@@ -200,3 +200,29 @@ def fake_tcp_interface():
 def fake_packet():
     """Return a _FakePacket factory."""
     return _FakePacket
+
+
+class _FakeSerialInterface:
+    """Minimal stub replacing meshtastic.serial_interface.SerialInterface."""
+
+    def __init__(self, devPath: str = ""):
+        self.devPath = devPath
+        self.localNode = _FakeLocalNode()
+        self.nodes = {
+            "!d45b9db8": {"user": {"longName": "postar", "shortName": "PST"}},
+        }
+        self._next_id = 100
+
+    def sendData(self, data, **kwargs):
+        pkt = _FakePacket(self._next_id)
+        self._next_id += 1
+        return pkt
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def fake_serial_interface():
+    """Return a _FakeSerialInterface class for patching."""
+    return _FakeSerialInterface

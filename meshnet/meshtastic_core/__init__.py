@@ -26,13 +26,24 @@ Usage::
 """
 import asyncio
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 from pubsub import pub
 from meshtastic import tcp_interface, portnums_pb2
 
 _DEFAULT_TCP_PORT = 4403
+
+
+@runtime_checkable
+class MeshtasticInterface(Protocol):
+    """Minimal interface shared by TCPInterface and SerialInterface."""
+
+    localNode: Any
+    nodes: dict[str, Any]
+
+    def sendData(self, data: bytes, **kwargs: Any) -> Any: ...
+    def close(self) -> None: ...
 
 
 class Meshtastic:
@@ -55,7 +66,7 @@ class Meshtastic:
             * ``serial://COM3`` — Windows COM port.
         """
         self._connect: str = connect
-        self.interface: Any | None = None
+        self.interface: MeshtasticInterface | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected: bool = False
         self._ack_futures: dict[int, asyncio.Future[bool]] = {}
@@ -71,7 +82,11 @@ class Meshtastic:
         self._loop = asyncio.get_running_loop()
         parsed = urlparse(self._connect)
         if parsed.scheme == "tcp":
-            hostname = parsed.hostname or ""
+            hostname = parsed.hostname
+            if not hostname:
+                raise ValueError(
+                    f"tcp:// URI must include a hostname, got: {self._connect!r}"
+                )
             port = parsed.port if parsed.port is not None else _DEFAULT_TCP_PORT
             logging.info("Connecting via TCP to %s:%s", hostname, port)
             self.interface = await self._loop.run_in_executor(
@@ -85,6 +100,10 @@ class Meshtastic:
             # serial:///dev/ttyUSB0 → path='/dev/ttyUSB0', netloc=''
             # serial://COM3        → netloc='COM3', path=''
             dev_path = parsed.path if parsed.path else parsed.netloc
+            if not dev_path or dev_path == "/":
+                raise ValueError(
+                    f"serial:// URI must include a device path, got: {self._connect!r}"
+                )
             logging.info("Connecting via serial to %s", dev_path)
             self.interface = await self._loop.run_in_executor(
                 None,

@@ -339,3 +339,67 @@ class TestPeerSocket:
                 peer = mesh.peer("!d45b9db8")
                 result = await peer.recv(timeout=0.01)
                 assert result is None
+
+
+class TestMeshtasticConnectURI:
+    """Tests for URI parsing and validation in connect()."""
+
+    @pytest.mark.asyncio
+    async def test_serial_connect_linux(self):
+        """serial:///dev/ttyUSB0 should pass devPath='/dev/ttyUSB0' to SerialInterface."""
+        from tests.conftest import _FakeSerialInterface
+
+        with patch("meshnet.meshtastic_core.pub"):
+            mock_serial = MagicMock()
+            mock_serial.SerialInterface = _FakeSerialInterface
+            with patch.dict("sys.modules", {"meshtastic.serial_interface": mock_serial}):
+                from meshnet.meshtastic_core import Meshtastic
+
+                mesh = Meshtastic("serial:///dev/ttyUSB0")
+                await mesh.connect()
+                assert mesh._connected is True
+                assert mesh.interface is not None
+                assert mesh.interface.devPath == "/dev/ttyUSB0"
+                mesh.close()
+
+    @pytest.mark.asyncio
+    async def test_serial_connect_windows(self):
+        """serial://COM3 should pass devPath='COM3' to SerialInterface."""
+        from tests.conftest import _FakeSerialInterface
+
+        with patch("meshnet.meshtastic_core.pub"):
+            mock_serial = MagicMock()
+            mock_serial.SerialInterface = _FakeSerialInterface
+            with patch.dict("sys.modules", {"meshtastic.serial_interface": mock_serial}):
+                from meshnet.meshtastic_core import Meshtastic
+
+                mesh = Meshtastic("serial://COM3")
+                await mesh.connect()
+                assert mesh._connected is True
+                assert mesh.interface is not None
+                assert mesh.interface.devPath == "COM3"
+                mesh.close()
+
+    @pytest.mark.asyncio
+    async def test_unsupported_scheme_raises(self):
+        from meshnet.meshtastic_core import Meshtastic
+
+        mesh = Meshtastic("http://10.1.5.3")
+        with pytest.raises(ValueError, match="Unsupported connection scheme"):
+            await mesh.connect()
+
+    @pytest.mark.asyncio
+    async def test_tcp_missing_hostname_raises(self):
+        from meshnet.meshtastic_core import Meshtastic
+
+        mesh = Meshtastic("tcp://:4403")
+        with pytest.raises(ValueError, match="hostname"):
+            await mesh.connect()
+
+    @pytest.mark.asyncio
+    async def test_serial_empty_device_raises(self):
+        from meshnet.meshtastic_core import Meshtastic
+
+        mesh = Meshtastic("serial://")
+        with pytest.raises(ValueError, match="device path"):
+            await mesh.connect()

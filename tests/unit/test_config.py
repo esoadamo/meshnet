@@ -278,3 +278,111 @@ class TestParseConfigErrors:
     def test_file_not_found(self):
         with pytest.raises(FileNotFoundError):
             parse_config("/nonexistent/path/mesh.conf")
+
+    def test_invalid_connect_scheme(self):
+        kp = KeyPair.generate()
+        peer = KeyPair.generate()
+        text = (
+            "[Interface]\n"
+            f"PrivateKey = {kp.private_base64()}\n"
+            "Address = 10.0.0.1/24\n"
+            "MeshtasticConnect = http://10.1.5.3\n"
+            "[Peer]\n"
+            f"PublicKey = {peer.public_base64()}\n"
+            "AllowedIPs = 10.0.0.2/32\n"
+            "Endpoint = !aabbccdd\n"
+        )
+        with pytest.raises(ValueError, match="tcp:// or serial://"):
+            self._write_and_parse(text)
+
+    def test_tcp_connect_missing_hostname(self):
+        kp = KeyPair.generate()
+        peer = KeyPair.generate()
+        text = (
+            "[Interface]\n"
+            f"PrivateKey = {kp.private_base64()}\n"
+            "Address = 10.0.0.1/24\n"
+            "MeshtasticConnect = tcp://:4403\n"
+            "[Peer]\n"
+            f"PublicKey = {peer.public_base64()}\n"
+            "AllowedIPs = 10.0.0.2/32\n"
+            "Endpoint = !aabbccdd\n"
+        )
+        with pytest.raises(ValueError, match="hostname"):
+            self._write_and_parse(text)
+
+    def test_tcp_connect_with_path(self):
+        kp = KeyPair.generate()
+        peer = KeyPair.generate()
+        text = (
+            "[Interface]\n"
+            f"PrivateKey = {kp.private_base64()}\n"
+            "Address = 10.0.0.1/24\n"
+            "MeshtasticConnect = tcp://10.1.5.3:4403/extra\n"
+            "[Peer]\n"
+            f"PublicKey = {peer.public_base64()}\n"
+            "AllowedIPs = 10.0.0.2/32\n"
+            "Endpoint = !aabbccdd\n"
+        )
+        with pytest.raises(ValueError, match="path/query/fragment"):
+            self._write_and_parse(text)
+
+    def test_serial_connect_missing_device(self):
+        kp = KeyPair.generate()
+        peer = KeyPair.generate()
+        text = (
+            "[Interface]\n"
+            f"PrivateKey = {kp.private_base64()}\n"
+            "Address = 10.0.0.1/24\n"
+            "MeshtasticConnect = serial://\n"
+            "[Peer]\n"
+            f"PublicKey = {peer.public_base64()}\n"
+            "AllowedIPs = 10.0.0.2/32\n"
+            "Endpoint = !aabbccdd\n"
+        )
+        with pytest.raises(ValueError, match="device path"):
+            self._write_and_parse(text)
+
+    def test_serial_connect_valid_linux(self, make_config_text):
+        """serial:///dev/ttyUSB0 should parse successfully."""
+        kp = KeyPair.generate()
+        peer = KeyPair.generate()
+        text = make_config_text(
+            private_key_b64=kp.private_base64(),
+            meshtastic_connect="serial:///dev/ttyUSB0",
+            peers=[
+                {
+                    "public_key": peer.public_base64(),
+                    "allowed_ips": "10.0.0.2/32",
+                    "endpoint": "!aabbccdd",
+                },
+            ],
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as f:
+            f.write(text)
+            f.flush()
+            cfg = parse_config(f.name)
+        os.unlink(f.name)
+        assert cfg.interface.meshtastic_connect == "serial:///dev/ttyUSB0"
+
+    def test_serial_connect_valid_windows(self, make_config_text):
+        """serial://COM3 should parse successfully."""
+        kp = KeyPair.generate()
+        peer = KeyPair.generate()
+        text = make_config_text(
+            private_key_b64=kp.private_base64(),
+            meshtastic_connect="serial://COM3",
+            peers=[
+                {
+                    "public_key": peer.public_base64(),
+                    "allowed_ips": "10.0.0.2/32",
+                    "endpoint": "!aabbccdd",
+                },
+            ],
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as f:
+            f.write(text)
+            f.flush()
+            cfg = parse_config(f.name)
+        os.unlink(f.name)
+        assert cfg.interface.meshtastic_connect == "serial://COM3"
