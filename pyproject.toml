@@ -25,3 +25,7 @@ dev = [
 
 [project.scripts]
 meshnet = "meshnet.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
