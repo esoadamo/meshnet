@@ -4,10 +4,18 @@ version = "0.1.0"
 description = "MeshNet: WireGuard-like VPN over Meshtastic mesh radio"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "AGPL-3.0-only"
+authors = [
+    { name = "Adam Hlaváček" },
+]
 dependencies = [
     "meshtastic>=2.7.8",
     "cryptography>=44.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/esoadamo/meshnet"
+Repository = "https://github.com/esoadamo/meshnet"
 
 [build-system]
 requires = ["hatchling"]
