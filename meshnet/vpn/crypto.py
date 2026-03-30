@@ -216,3 +216,12 @@ def verify_mac(key: bytes, data: bytes, expected: bytes) -> bool:
 def generate_psk() -> bytes:
     """Generate a random 32-byte preshared key."""
     return os.urandom(PSK_LEN)
+
+
+def derive_symmetric_key(psk: bytes) -> bytes:
+    """Derive a 32-byte ChaCha20-Poly1305 key from a PSK for symmetric mode.
+
+    Uses HKDF-SHA256 with a fixed salt so that both peers deterministically
+    arrive at the same transport key without a handshake.
+    """
+    return kdf(ikm=psk, salt=b"symmetric", info=b"meshnet-symmetric-key", length=32)

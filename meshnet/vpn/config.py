@@ -56,7 +56,7 @@ class PeerConfig:
     preshared_key: bytes | None  # 32-byte PSK or None
     allowed_ips: list[ipaddress.IPv4Network | ipaddress.IPv6Network]
     endpoint: str  # meshtastic node ID, e.g. "!d45b9db8"
-    mode: str  # "WG" (default — full handshake) or "AES" (PSK-only AES-GCM)
+    mode: str  # "PKI" (default — full handshake) or "SYMMETRIC" (PSK-only ChaCha20)
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,11 +184,11 @@ def _parse_peer(kv: dict[str, str]) -> PeerConfig:
     if not endpoint.startswith("!"):
         raise ValueError(f"Endpoint must be a meshtastic node ID (starts with '!'): {endpoint}")
 
-    mode = kv.get("PeerMode", "WG").upper()
-    if mode not in ("WG", "AES"):
-        raise ValueError(f"PeerMode must be 'WG' or 'AES', got: {kv.get('PeerMode')!r}")
-    if mode == "AES" and psk is None:
-        raise ValueError("PeerMode=AES requires PresharedKey to be set")
+    mode = kv.get("PeerMode", "PKI").upper()
+    if mode not in ("PKI", "SYMMETRIC"):
+        raise ValueError(f"PeerMode must be 'PKI' or 'SYMMETRIC', got: {kv.get('PeerMode')!r}")
+    if mode == "SYMMETRIC" and psk is None:
+        raise ValueError("PeerMode=SYMMETRIC requires PresharedKey to be set")
 
     return PeerConfig(
         public_key=raw_pub,

@@ -26,7 +26,7 @@ from meshtastic import portnums_pb2
 from meshnet.vpn.config import MeshnetConfig, parse_config
 from meshnet.vpn.crypto import KeyPair
 from meshnet.vpn.routing import RoutingTable
-from meshnet.vpn.session import AesPeerSession, PeerSession, SessionState
+from meshnet.vpn.session import SymmetricPeerSession, PeerSession, SessionState
 from meshnet.vpn.tap import TapDevice
 from meshnet.vpn.transport import (
     Fragmenter,
@@ -69,7 +69,7 @@ class MeshVPN:
         self._mesh: Any = None  # meshtastic_socket.Meshtastic
         self._tap: TapDevice | None = None
         self._routing: RoutingTable = RoutingTable()
-        self._sessions: dict[str, PeerSession | AesPeerSession] = {}
+        self._sessions: dict[str, PeerSession | SymmetricPeerSession] = {}
         self._fragmenter: Fragmenter = Fragmenter()
         self._vpn_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._unregister_listener: Any = None
@@ -117,9 +117,9 @@ class MeshVPN:
         for peer in cfg.peers:
             for network in peer.allowed_ips:
                 self._routing.add_route(network, peer.endpoint)
-            if peer.mode == "AES":
+            if peer.mode == "SYMMETRIC":
                 assert peer.preshared_key is not None
-                self._sessions[peer.endpoint] = AesPeerSession(
+                self._sessions[peer.endpoint] = SymmetricPeerSession(
                     peer_node_id=peer.endpoint,
                     preshared_key=peer.preshared_key,
                 )
@@ -247,8 +247,8 @@ class MeshVPN:
             if session is None:
                 log.warning("HandshakeInit from unknown peer %s", sender)
                 return
-            if isinstance(session, AesPeerSession):
-                log.debug("Ignoring HandshakeInit from %s (AES mode)", sender)
+            if isinstance(session, SymmetricPeerSession):
+                log.debug("Ignoring HandshakeInit from %s (SYMMETRIC mode)", sender)
                 return
 
             # Collision: both sides sent HandshakeInit simultaneously.
@@ -368,12 +368,14 @@ class MeshVPN:
             status = {"peers": peers}
             try:
                 STATUS_DIR.mkdir(parents=True, exist_ok=True)
+                STATUS_DIR.chmod(0o755)
                 fd = tempfile.NamedTemporaryFile(
                     mode="w", dir=STATUS_DIR, delete=False, suffix=".tmp"
                 )
                 json.dump(status, fd)
                 fd.flush()
                 os.fsync(fd.fileno())
+                os.fchmod(fd.fileno(), 0o644)
                 fd.close()
                 os.replace(fd.name, str(status_file))
             except OSError as exc:

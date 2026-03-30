@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 from meshnet.vpn.crypto import (
     KeyPair,
     decrypt,
+    derive_symmetric_key,
     derive_transport_keys,
     dh,
     encrypt,
@@ -340,43 +341,45 @@ class PeerSession:
 
 
 # ---------------------------------------------------------------------------
-# AES-GCM PSK-only session (no handshake)
+# Symmetric PSK-only session (no handshake)
 # ---------------------------------------------------------------------------
 
 
-class AesPeerSession:
-    """Encrypts/decrypts frames using a shared PSK with AES-256-GCM.
+class SymmetricPeerSession:
+    """Encrypts/decrypts frames using a key derived from the config PSK.
 
     No handshake is performed — the session is immediately ESTABLISHED.
-    Both sides use the same key for both directions; replay protection
-    is identical to :class:`PeerSession`.
+    Both sides use the same derived key for both directions; replay
+    protection is identical to :class:`PeerSession`.
+
+    The send counter starts at a random 64-bit value to prevent nonce
+    reuse across restarts (the derived key is static for a given PSK).
     """
 
     _REPLAY_WINDOW_SIZE: int = 256
 
     def __init__(self, peer_node_id: str, preshared_key: bytes) -> None:
         if len(preshared_key) != 32:
-            raise ValueError("AES PSK must be exactly 32 bytes")
+            raise ValueError("PSK must be exactly 32 bytes")
         self.peer_node_id: str = peer_node_id
-        self._key: bytes = preshared_key
+        self._key: bytes = derive_symmetric_key(preshared_key)
 
         self.state: SessionState = SessionState.ESTABLISHED
+        self.send_counter: int = int.from_bytes(os.urandom(8), "little")
         self.recv_counter_max: int = 0
         self._recv_counter_seen: set[int] = set()
         self._recv_counter_window_floor: int = 0
         self.last_rx: float = 0.0
 
-        log.info("AES-GCM session ready for %s (PSK mode, no handshake)", peer_node_id)
+        log.info("Symmetric session ready for %s (PSK mode, no handshake)", peer_node_id)
 
     # -- encrypt / decrypt --------------------------------------------------
 
     def encrypt_frame(self, frame: bytes) -> TransportData:
-        nonce_int = time.time_ns()
-        nonce = nonce_int.to_bytes(8, "little") + b"\x00" * 4
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-        ct = AESGCM(self._key).encrypt(nonce, frame, associated_data=None)
-        return TransportData(counter=nonce_int, ciphertext=ct)
+        ct = encrypt(self._key, self.send_counter, frame)
+        pkt = TransportData(counter=self.send_counter, ciphertext=ct)
+        self.send_counter += 1
+        return pkt
 
     def decrypt_frame(self, data: TransportData) -> bytes:
         if data.counter in self._recv_counter_seen:
@@ -387,10 +390,7 @@ class AesPeerSession:
                 f"{self._recv_counter_window_floor}"
             )
 
-        nonce = data.counter.to_bytes(8, "little") + b"\x00" * 4
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-        frame = AESGCM(self._key).decrypt(nonce, data.ciphertext, associated_data=None)
+        frame = decrypt(self._key, data.counter, data.ciphertext)
 
         self.last_rx = time.time()
         self._recv_counter_seen.add(data.counter)

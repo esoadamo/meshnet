@@ -16,6 +16,7 @@ from meshnet.vpn.crypto import (
     TAG_LEN,
     KeyPair,
     decrypt,
+    derive_symmetric_key,
     derive_transport_keys,
     dh,
     encrypt,
@@ -267,3 +268,27 @@ class TestGeneratePSK:
 
     def test_unique(self):
         assert generate_psk() != generate_psk()
+
+
+class TestDeriveSymmetricKey:
+    """Tests for derive_symmetric_key (HKDF from PSK for symmetric mode)."""
+
+    def test_output_length(self):
+        key = derive_symmetric_key(os.urandom(32))
+        assert len(key) == 32
+
+    def test_deterministic(self):
+        psk = os.urandom(32)
+        k1 = derive_symmetric_key(psk)
+        k2 = derive_symmetric_key(psk)
+        assert k1 == k2
+
+    def test_different_psk_different_key(self):
+        k1 = derive_symmetric_key(os.urandom(32))
+        k2 = derive_symmetric_key(os.urandom(32))
+        assert k1 != k2
+
+    def test_differs_from_raw_psk(self):
+        psk = os.urandom(32)
+        key = derive_symmetric_key(psk)
+        assert key != psk

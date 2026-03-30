@@ -15,6 +15,7 @@ from meshnet.vpn.session import (
     REJECT_AFTER_MESSAGES,
     PeerSession,
     SessionState,
+    SymmetricPeerSession,
 )
 from meshnet.vpn.transport import (
     HandshakeInit,
@@ -251,3 +252,98 @@ class TestRekey:
         peer_kp = KeyPair.generate()
         session = PeerSession("!peer", peer_kp.public_bytes(), kp)
         assert session.needs_rekey() is False
+
+
+# ---------------------------------------------------------------------------
+# SymmetricPeerSession tests
+# ---------------------------------------------------------------------------
+
+
+class TestSymmetricPeerSessionInit:
+    def test_immediately_established(self):
+        from meshnet.vpn.crypto import generate_psk
+
+        psk = generate_psk()
+        session = SymmetricPeerSession("!peer", psk)
+        assert session.is_established is True
+        assert session.state == SessionState.ESTABLISHED
+
+    def test_random_nonzero_counter(self):
+        from meshnet.vpn.crypto import generate_psk
+
+        psk = generate_psk()
+        s1 = SymmetricPeerSession("!a", psk)
+        s2 = SymmetricPeerSession("!b", psk)
+        # Both start at random values — extremely unlikely to be equal
+        assert s1.send_counter != 0 or s2.send_counter != 0
+        # At least one should differ (probabilistic but safe with 64-bit random)
+        assert s1.send_counter != s2.send_counter
+
+    def test_requires_32_byte_psk(self):
+        with pytest.raises(ValueError, match="32 bytes"):
+            SymmetricPeerSession("!peer", b"short")
+
+    def test_needs_rekey_false(self):
+        from meshnet.vpn.crypto import generate_psk
+
+        session = SymmetricPeerSession("!peer", generate_psk())
+        assert session.needs_rekey() is False
+
+    def test_init_timed_out_false(self):
+        from meshnet.vpn.crypto import generate_psk
+
+        session = SymmetricPeerSession("!peer", generate_psk())
+        assert session.init_timed_out() is False
+
+
+class TestSymmetricEncryptDecrypt:
+    def _make_pair(self):
+        from meshnet.vpn.crypto import generate_psk
+
+        psk = generate_psk()
+        a = SymmetricPeerSession("!b", psk)
+        b = SymmetricPeerSession("!a", psk)
+        return a, b
+
+    def test_roundtrip(self):
+        a, b = self._make_pair()
+        frame = b"hello symmetric"
+        transport = a.encrypt_frame(frame)
+        decrypted = b.decrypt_frame(transport)
+        assert decrypted == frame
+
+    def test_multiple_frames(self):
+        a, b = self._make_pair()
+        for i in range(10):
+            frame = bytes([i]) * 40
+            transport = a.encrypt_frame(frame)
+            assert b.decrypt_frame(transport) == frame
+
+    def test_bidirectional(self):
+        a, b = self._make_pair()
+        t_ab = a.encrypt_frame(b"A->B")
+        t_ba = b.encrypt_frame(b"B->A")
+        assert b.decrypt_frame(t_ab) == b"A->B"
+        assert a.decrypt_frame(t_ba) == b"B->A"
+
+    def test_counter_increments(self):
+        a, b = self._make_pair()
+        t1 = a.encrypt_frame(b"first")
+        t2 = a.encrypt_frame(b"second")
+        assert t2.counter == t1.counter + 1
+
+    def test_wrong_psk_fails(self):
+        from meshnet.vpn.crypto import generate_psk
+
+        a = SymmetricPeerSession("!b", generate_psk())
+        b = SymmetricPeerSession("!a", generate_psk())
+        transport = a.encrypt_frame(b"secret")
+        with pytest.raises(InvalidTag):
+            b.decrypt_frame(transport)
+
+    def test_replay_detected(self):
+        a, b = self._make_pair()
+        transport = a.encrypt_frame(b"data")
+        b.decrypt_frame(transport)
+        with pytest.raises(ValueError, match="Replay detected"):
+            b.decrypt_frame(transport)
