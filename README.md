@@ -12,9 +12,10 @@ routable IP address — even when there is no Internet infrastructure.
 | Feature | Description |
 |---|---|
 | **WireGuard-inspired cryptography** | X25519 key exchange, ChaCha20-Poly1305 AEAD, HKDF-SHA256 KDF, BLAKE2s MACs |
-| **Simplified handshake** | 1-RTT handshake with mutual static-key authentication and ephemeral forward secrecy |
-| **Optional preshared key (PSK)** | Extra symmetric key mixed into key derivation for post-quantum defence-in-depth |
-| **Automatic rekeying** | Sessions rekey after 5 minutes or 2¹⁶ messages |
+| **Two peer modes** | **PKI** (default) — full X25519 handshake with forward secrecy; **Symmetric** — PSK-derived key, no handshake needed |
+| **Simplified handshake (PKI mode)** | 1-RTT handshake with mutual static-key authentication and ephemeral forward secrecy |
+| **Optional preshared key (PSK)** | Extra symmetric key mixed into key derivation for post-quantum defence-in-depth (PKI) or sole key material (Symmetric) |
+| **Automatic rekeying** | PKI sessions rekey after 5 hours or 2¹⁶ messages (deferred on idle links) |
 | **Sliding-window replay protection** | 256-packet window rejects duplicates while tolerating reordering |
 | **Fragmentation / reassembly** | Transparently splits payloads exceeding the 233-byte Meshtastic radio MTU |
 | **Familiar CLI** | `meshnet genkey`, `pubkey`, `genpsk`, `up`, `down`, `show` — just like `wg` |
@@ -59,16 +60,18 @@ meshnet/
 
 ### Installation
 
+Install as a uv tool (no clone needed):
+
+```bash
+uv tool install meshnet
+```
+
+Or clone and install locally:
+
 ```bash
 git clone https://github.com/esoadamo/meshnet.git
 cd meshnet
 uv sync          # installs into .venv
-```
-
-Or install as a package:
-
-```bash
-pip install .
 ```
 
 ### Generate keys
@@ -134,6 +137,8 @@ meshnet down
 | `MTU` | ❌ | `180` | TAP device MTU (constrained by Meshtastic payload size) |
 | `TapName` | ❌ | `mesh0` | Linux TAP interface name |
 | `MeshtasticConnect` | ✅ | — | Connection URI for the Meshtastic device (see below) |
+| `RunAsUser` | ❌ | — | Drop to this unprivileged user after TAP setup (e.g. `nobody`) |
+| `RunAsGroup` | ❌ | — | Drop to this group after TAP setup (e.g. `nogroup`) |
 
 **`MeshtasticConnect` URI schemes:**
 
@@ -145,12 +150,33 @@ meshnet down
 
 ### `[Peer]` section (one or more)
 
-| Key | Required | Description |
-|---|---|---|
-| `PublicKey` | ✅ | Peer's base64-encoded X25519 public key |
-| `PresharedKey` | ❌ | Optional base64-encoded 32-byte PSK for extra security |
-| `AllowedIPs` | ✅ | Comma-separated CIDR ranges routed to this peer |
-| `Endpoint` | ✅ | Meshtastic node ID (e.g. `!d45b9db8`) |
+| Key | Required | Default | Description |
+|---|---|---|---|
+| `PublicKey` | ✅ | — | Peer's base64-encoded X25519 public key |
+| `PresharedKey` | ❌¹ | — | Base64-encoded 32-byte PSK |
+| `AllowedIPs` | ✅ | — | Comma-separated CIDR ranges routed to this peer |
+| `Endpoint` | ✅ | — | Meshtastic node ID (e.g. `!d45b9db8`) |
+| `PeerMode` | ❌ | `PKI` | `PKI` — full X25519 handshake; `SYMMETRIC` — PSK-only, no handshake |
+
+¹ Required when `PeerMode = SYMMETRIC`.
+
+### Peer modes
+
+**PKI** (default) — a 1-RTT X25519 handshake derives unique ephemeral
+keys for each session, providing forward secrecy. The optional PSK is
+mixed into the KDF for post-quantum defence-in-depth. Sessions rekey
+automatically after 5 hours or 2¹⁶ messages. If a link has been idle
+for 30 minutes when a rekey is due, the rekey is deferred until the
+next actual communication to avoid wasting air time.
+
+**Symmetric** — the transport key is derived from the PSK alone via
+`HKDF-SHA256(ikm=PSK, salt="symmetric", info="meshnet-symmetric-key")`.
+No handshake is needed — the session is established immediately. Each
+side starts its send counter at a random 64-bit value to prevent nonce
+reuse across daemon restarts. There is no forward secrecy; compromising
+the PSK exposes all past and future traffic. Use this mode when
+handshake round-trips are impractical (e.g. very high-latency mesh
+links) or for simple pre-shared-key deployments.
 
 ## Wire protocol
 
@@ -182,7 +208,7 @@ All packets start with a 1-byte type discriminator:
        │ ◄─────────────────────────────►│
 ```
 
-Three Diffie-Hellman computations derive transport keys:
+Three Diffie-Hellman computations derive transport keys (PKI mode):
 
 1. **DH(eph_I, eph_R)** — ephemeral-ephemeral (forward secrecy)
 2. **DH(static_I, eph_R)** — static-ephemeral (identity binding)
@@ -191,13 +217,16 @@ Three Diffie-Hellman computations derive transport keys:
 If a PSK is configured, it is mixed into the HKDF salt for additional
 post-quantum protection.
 
+In **Symmetric mode**, no handshake occurs. Both peers derive the same
+ChaCha20-Poly1305 key from the shared PSK using HKDF-SHA256.
+
 ## Testing
 
 ```bash
 uv run pytest tests/ -v --tb=short
 ```
 
-The test suite includes **186 tests** across three categories:
+The test suite includes **212+ tests** across three categories:
 
 * **Unit tests** — crypto, transport, config, routing, session, TAP, CLI, meshtastic core
 * **Integration tests** — full handshake→encrypt→fragment→reassemble→decrypt pipelines
@@ -212,6 +241,7 @@ security analysis.
 
 ### Security hardening summary
 
+* **Privilege separation**: Optional `RunAsUser`/`RunAsGroup` drops root after TAP device setup
 * **Replay protection**: Sliding-window (256 packets) rejects duplicates while tolerating mesh reordering
 * **Nonce safety**: Counter overflow guard prevents nonce reuse
 * **Input validation**: TAP name regex, MTU bounds, fragment metadata checks

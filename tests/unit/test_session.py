@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
 import pytest
 from cryptography.exceptions import InvalidTag
@@ -12,7 +11,7 @@ from meshnet.vpn.crypto import KeyPair
 from meshnet.vpn.session import (
     REKEY_AFTER_MESSAGES,
     REKEY_AFTER_SECONDS,
-    REJECT_AFTER_MESSAGES,
+    REKEY_DEFER_IDLE_SECONDS,
     PeerSession,
     SessionState,
     SymmetricPeerSession,
@@ -252,6 +251,38 @@ class TestRekey:
         peer_kp = KeyPair.generate()
         session = PeerSession("!peer", peer_kp.public_bytes(), kp)
         assert session.needs_rekey() is False
+
+    def test_rekey_deferred_when_peer_idle(self):
+        """Rekey is deferred if peer has been idle longer than threshold."""
+        kp = KeyPair.generate()
+        peer_kp = KeyPair.generate()
+        session = PeerSession("!peer", peer_kp.public_bytes(), kp)
+        session.state = SessionState.ESTABLISHED
+        session._established_at = time.monotonic() - REKEY_AFTER_SECONDS - 1
+        # Peer was last seen long ago — idle.
+        session.last_rx = time.time() - REKEY_DEFER_IDLE_SECONDS - 1
+        assert session.needs_rekey() is False
+
+    def test_rekey_not_deferred_when_peer_active(self):
+        """Rekey proceeds if peer has recent traffic."""
+        kp = KeyPair.generate()
+        peer_kp = KeyPair.generate()
+        session = PeerSession("!peer", peer_kp.public_bytes(), kp)
+        session.state = SessionState.ESTABLISHED
+        session._established_at = time.monotonic() - REKEY_AFTER_SECONDS - 1
+        # Peer was seen recently.
+        session.last_rx = time.time() - 10
+        assert session.needs_rekey() is True
+
+    def test_rekey_not_deferred_when_no_rx(self):
+        """Rekey proceeds if we never received anything (last_rx == 0)."""
+        kp = KeyPair.generate()
+        peer_kp = KeyPair.generate()
+        session = PeerSession("!peer", peer_kp.public_bytes(), kp)
+        session.state = SessionState.ESTABLISHED
+        session._established_at = time.monotonic() - REKEY_AFTER_SECONDS - 1
+        session.last_rx = 0.0
+        assert session.needs_rekey() is True
 
 
 # ---------------------------------------------------------------------------

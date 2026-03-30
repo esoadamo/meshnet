@@ -177,14 +177,22 @@ class Meshtastic:
         :param packet: The received packet dictionary.
         """
         decoded = packet.get("decoded", {})
+        payload = decoded.get("payload", b"")
         msg = {
             "sender": packet.get("fromId", "unknown"),
             "text": decoded.get("text", ""),
-            "data": decoded.get("payload", b""),
+            "data": payload,
             "portnum": decoded.get("portnum", ""),
             "packet": packet,
             "channel": packet.get("channel", 0),
         }
+        logging.info(
+            "Received payload (%s bytes) ← sender=%s channel=%s port=%s",
+            len(payload) if isinstance(payload, (bytes, bytearray)) else 0,
+            msg["sender"],
+            msg["channel"],
+            msg["portnum"],
+        )
         for filter_fn, queue in self._listeners:
             if filter_fn(packet):
                 if self._loop:

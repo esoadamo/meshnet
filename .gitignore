@@ -10,3 +10,4 @@ wheels/
 .venv
 .agents
 *.conf
+!example*.conf

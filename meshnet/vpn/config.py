@@ -46,6 +46,8 @@ class InterfaceConfig:
     mtu: int
     tap_name: str
     meshtastic_connect: str  # URI e.g. tcp://host:port or serial:///dev/ttyUSB0
+    run_as_user: str | None  # drop privileges to this user after setup
+    run_as_group: str | None  # drop privileges to this group after setup
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +157,8 @@ def _parse_interface(kv: dict[str, str]) -> InterfaceConfig:
         mtu=int(kv.get("MTU", "180")),
         tap_name=kv.get("TapName", "mesh0"),
         meshtastic_connect=connect,
+        run_as_user=kv.get("RunAsUser") or None,
+        run_as_group=kv.get("RunAsGroup") or None,
     )
 
 

@@ -46,10 +46,11 @@ log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-REKEY_AFTER_SECONDS: int = 300  # 5 minutes
+REKEY_AFTER_SECONDS: int = 18000  # 5 hours
 REKEY_AFTER_MESSAGES: int = 2**16
 REJECT_AFTER_MESSAGES: int = 2**64 - 1
 INIT_TIMEOUT_SECONDS: int = 30  # drop back to IDLE if no response
+REKEY_DEFER_IDLE_SECONDS: int = 1800  # defer rekey if no traffic for 30 minutes
 
 
 class SessionState(Enum):
@@ -314,14 +315,26 @@ class PeerSession:
     # -- rekey check --------------------------------------------------------
 
     def needs_rekey(self) -> bool:
-        """``True`` when the session should be rekeyed."""
+        """``True`` when the session should be rekeyed.
+
+        If the rekey threshold has been reached but the peer has been idle
+        (no traffic for :data:`REKEY_DEFER_IDLE_SECONDS`), the rekey is
+        deferred until the next actual communication to avoid wasting
+        air time on an idle link.
+        """
         if self.state != SessionState.ESTABLISHED:
             return False
+        due = False
         if self.send_counter >= REKEY_AFTER_MESSAGES:
-            return True
-        if time.monotonic() - self._established_at >= REKEY_AFTER_SECONDS:
-            return True
-        return False
+            due = True
+        elif time.monotonic() - self._established_at >= REKEY_AFTER_SECONDS:
+            due = True
+        if not due:
+            return False
+        # Defer if the link has been idle for a while.
+        if self.last_rx > 0 and time.time() - self.last_rx >= REKEY_DEFER_IDLE_SECONDS:
+            return False
+        return True
 
     def init_timed_out(self) -> bool:
         """``True`` when INIT_SENT has timed out waiting for a response."""

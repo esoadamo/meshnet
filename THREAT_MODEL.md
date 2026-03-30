@@ -51,12 +51,25 @@ MeshNet consists of:
 
 | Primitive | Usage | Library |
 |---|---|---|
-| X25519 | Static + ephemeral key exchange | `cryptography` (OpenSSL) |
-| ChaCha20-Poly1305 | AEAD encryption of transport data | `cryptography` |
-| HKDF-SHA256 | Transport key derivation from DH outputs | `cryptography` |
-| BLAKE2s (keyed, 128-bit) | Handshake message authentication | Python `hashlib` |
+| X25519 | Static + ephemeral key exchange (PKI mode) | `cryptography` (OpenSSL) |
+| ChaCha20-Poly1305 | AEAD encryption of transport data (both modes) | `cryptography` |
+| HKDF-SHA256 | Transport key derivation from DH outputs (PKI) or PSK (Symmetric) | `cryptography` |
+| BLAKE2s (keyed, 128-bit) | Handshake message authentication (PKI mode) | Python `hashlib` |
 
-### Handshake
+### Peer modes
+
+MeshNet supports two peer modes:
+
+**PKI mode** (default, `PeerMode = PKI`) — a 1-RTT X25519 handshake with
+mutual static-key authentication.  An optional PSK is mixed into the KDF
+for post-quantum defence-in-depth.  Sessions rekey automatically.
+
+**Symmetric mode** (`PeerMode = SYMMETRIC`) — the transport key is derived
+from the config PSK via `HKDF-SHA256(ikm=PSK, salt="symmetric",
+info="meshnet-symmetric-key")`.  No handshake is performed; the session is
+immediately established.  Both peers must configure the same PSK.
+
+### Handshake (PKI mode)
 
 The handshake is a simplified WireGuard IKpsk2-like pattern:
 
@@ -84,9 +97,21 @@ Compute same DH and derive keys
 
 **Key properties:**
 
-* **Forward secrecy**: Compromising a static key does not reveal past session keys (ephemeral DH).
-* **Mutual authentication**: Both sides prove possession of their static private key through DH.
-* **Optional PSK**: Adds a symmetric secret to the KDF, providing defence-in-depth against future quantum attacks on X25519.
+* **Forward secrecy** (PKI only): Compromising a static key does not reveal past session keys (ephemeral DH).
+* **Mutual authentication** (PKI only): Both sides prove possession of their static private key through DH.
+* **Optional PSK** (PKI): Adds a symmetric secret to the KDF, providing defence-in-depth against future quantum attacks on X25519.
+
+### Nonce / counter strategy
+
+**PKI mode**: Send counter starts at 0 after each handshake.  This is safe
+because every handshake derives fresh transport keys from ephemeral DH.
+
+**Symmetric mode**: The derived key is static (same PSK → same key), so
+the send counter starts at a random 64-bit value
+(`int.from_bytes(os.urandom(8), "little")`) to prevent nonce reuse across
+daemon restarts.  With a 64-bit counter space and random starting point,
+the birthday-bound risk of two sessions overlapping is approximately
+2⁻³² after ~2³² daemon restarts — acceptable for the threat model.
 
 ---
 
@@ -104,35 +129,14 @@ Compute same DH and derive keys
 | **N-6** | **Fragment injection** — attacker injects crafted fragments | Medium | Fragments are reassembled then decrypted; injected data fails AEAD authentication | ✅ Mitigated |
 | **N-7** | **Fragment memory exhaustion** — attacker floods incomplete fragments | Medium | Hard cap of 256 concurrent reassembly buffers + 30s timeout GC; oldest buffer evicted at capacity | ✅ Mitigated |
 
-### 3.2 Cryptographic threats
-
-| ID | Threat | Severity | Mitigation | Status |
-|---|---|---|---|---|
-| **C-1** | **Nonce reuse** — same (key, nonce) pair used twice | Critical | Monotonic counter per session; counter overflow guard raises `OverflowError`; sessions rekey after 2¹⁶ messages or 5 minutes | ✅ Mitigated |
-| **C-2** | **Key compromise** — static private key stolen | Critical | Config file permission warning (should be `0600`); private key never logged; ephemeral keys provide forward secrecy for past sessions | ⚠️ Partially mitigated |
-| **C-3** | **Weak randomness** — predictable key generation | High | Uses `os.urandom()` and `X25519PrivateKey.generate()` from the `cryptography` library (backed by OpenSSL CSPRNG) | ✅ Mitigated |
-| **C-4** | **Quantum attack on X25519** — future quantum computer breaks ECDH | Low (future) | Optional PSK provides a symmetric fallback; full post-quantum key exchange not yet implemented | ⚠️ Partial (PSK-only) |
-| **C-5** | **Side-channel timing** — MAC verification leaks information | Medium | BLAKE2s MAC verified via `hmac.compare_digest()` (constant-time comparison) | ✅ Mitigated |
-
-### 3.3 Host-level threats
-
-| ID | Threat | Severity | Mitigation | Status |
-|---|---|---|---|---|
-| **H-1** | **Config file exposure** — private key readable by other users | High | CLI warns on insecure permissions; documentation recommends `chmod 600` | ⚠️ Warning only |
-| **H-2** | **PID file race condition** — TOCTOU between check and write | Low | PID file created atomically with `O_CREAT \| O_EXCL` | ✅ Mitigated |
-| **H-3** | **PID file poisoning** — attacker writes arbitrary PID | Low | PID content validated: must be numeric and positive before `kill()` | ✅ Mitigated |
-| **H-4** | **TAP name injection** — malicious interface name | Medium | TAP name validated against `^[a-zA-Z0-9][-a-zA-Z0-9]{0,14}$`; MTU bounds-checked | ✅ Mitigated |
-| **H-5** | **Privilege escalation** — daemon runs as root | Medium | Necessary for TAP device creation (`CAP_NET_ADMIN`); no privilege dropping after setup | ⚠️ Residual risk |
-| **H-6** | **Memory exposure** — key material in process memory | Low | Python does not offer secure memory zeroing; keys remain in heap until GC'd | ⚠️ Inherent limitation |
-
-### 3.4 Protocol-level threats
+### 3.1 Protocol-level threats
 
 | ID | Threat | Severity | Mitigation | Status |
 |---|---|---|---|---|
 | **P-1** | **Identity misbinding** — peer impersonation | High | Handshake MAC uses `DH(static_I, static_R)`; only the holder of the correct static key can produce a valid MAC | ✅ Mitigated |
 | **P-2** | **Session ID collision** — two sessions with same 32-bit ID | Low | Session IDs are random (`os.urandom(4)`); collision probability is ~1/2³² per handshake | ✅ Acceptable |
-| **P-3** | **Cross-session key reuse** — same transport keys in different sessions | Critical | Each handshake generates fresh ephemeral keys; three independent DH computations ensure unique key material | ✅ Mitigated |
-| **P-4** | **Denial of service via rekeying** — forcing constant rekeys | Medium | Rekey only triggered by time (5 min) or message count (2¹⁶); handshake flood rate limiting not implemented | ⚠️ Residual risk |
+| **P-3** | **Cross-session key reuse** — same transport keys in different sessions | Critical | **PKI**: Each handshake generates fresh ephemeral keys; three independent DH computations ensure unique key material. **Symmetric**: Key is static but nonce collision is mitigated by random 64-bit counter start | ✅ Mitigated |
+| **P-4** | **Denial of service via rekeying** — forcing constant rekeys | Medium | Rekey only triggered by time (5 h) or message count (2¹⁶); idle links defer rekey until next traffic; handshake flood rate limiting not implemented; **Symmetric** mode is immune (no rekeying) | ⚠️ Residual risk (PKI only) |
 
 ---
 
@@ -143,19 +147,9 @@ Compute same DH and derive keys
 | Risk | Recommendation |
 |---|---|
 | **No handshake rate limiting (N-5, P-4)** | Implement per-peer rate limiting on handshake initiation and response (e.g. 1 handshake per 5 seconds per peer) |
-| **Daemon runs as root (H-5)** | After TAP device creation, drop to an unprivileged user/group using `setuid()`/`setgid()` |
-| **No secure memory zeroing (H-6)** | Inherent Python limitation; for highest-security deployments, consider a C/Rust core for key management |
-| **Config file not enforced 0600 (H-1)** | Optionally refuse to start if permissions are too open (like SSH does with `~/.ssh/id_rsa`) |
-| **No certificate/PKI-based identity (P-1)** | Consider adding an optional certificate chain for identity verification in larger mesh networks |
-| **Meshtastic TCP unencrypted (N-1)** | The TCP link to the local Meshtastic device is plaintext; if the radio is remote, tunnel it through SSH or TLS |
-
-### Future enhancements
-
-1. **Post-quantum key exchange** — Replace or augment X25519 with a hybrid KEM (e.g. ML-KEM/Kyber + X25519)
-2. **Privilege separation** — Fork a privileged TAP helper and run crypto/routing as unprivileged
-3. **Cookie-based DoS protection** — Add a cookie mechanism (like WireGuard's `mac2`) to validate handshake initiators under load
-4. **Audit logging** — Log handshake events, auth failures, and rekey events to syslog for SIEM integration
-5. **Key rotation** — Support hot-reloading of config files for key rotation without daemon restart
+| **Symmetric mode: no forward secrecy** | PSK compromise exposes all traffic; rotate PSKs periodically; prefer PKI mode when latency permits |
+| **Symmetric mode: nonce collision risk** | Random 64-bit counter start has ~2⁻³² collision probability after ~2³² restarts; acceptable but consider persisting last counter value for long-lived deployments |
+| **Daemon runs as root (H-5)** | Configure `RunAsUser`/`RunAsGroup` in `[Interface]` to drop privileges after TAP creation; without these options the daemon stays root |
 
 ---
 
@@ -163,12 +157,12 @@ Compute same DH and derive keys
 
 | STRIDE Category | Applicable threats | Primary mitigations |
 |---|---|---|
-| **Spoofing** | P-1 (impersonation) | Static key mutual authentication via DH+MAC |
-| **Tampering** | N-3 (packet modification) | Poly1305 AEAD authentication tag |
+| **Spoofing** | P-1 (impersonation) | PKI: static key mutual authentication via DH+MAC; Symmetric: PSK knowledge required |
+| **Tampering** | N-3 (packet modification) | Poly1305 AEAD authentication tag (both modes) |
 | **Repudiation** | — | Not addressed (no audit logging yet) |
 | **Information disclosure** | N-1 (eavesdropping), C-2 (key theft), H-1 (config exposure) | ChaCha20 encryption, permission warnings |
 | **Denial of service** | N-5 (handshake flood), N-7 (fragment exhaustion) | Buffer limits, GC timeouts |
-| **Elevation of privilege** | H-5 (root daemon) | Root required for TAP; no privilege drop yet |
+| **Elevation of privilege** | H-5 (root daemon) | Root required for TAP; optional `RunAsUser`/`RunAsGroup` drops privileges after setup |
 
 ---
 

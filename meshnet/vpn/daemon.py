@@ -138,6 +138,10 @@ class MeshVPN:
             asyncio.create_task(self._handshake_manager(), name="handshake"),
             asyncio.create_task(self._status_writer(), name="status"),
         ]
+
+        # Drop privileges after all privileged operations are done.
+        self._drop_privileges(cfg.interface.run_as_user, cfg.interface.run_as_group)
+
         log.info("MeshVPN running — %d peer(s) configured", len(cfg.peers))
 
         # Wait for all tasks (they run forever until cancelled).
@@ -160,8 +164,49 @@ class MeshVPN:
             self._tap.close()
         if self._mesh:
             self._mesh.close()
-        (STATUS_DIR / "status.json").unlink(missing_ok=True)
+        try:
+            (STATUS_DIR / "status.json").unlink(missing_ok=True)
+        except OSError:
+            pass
         log.info("MeshVPN stopped")
+
+    # -- privilege drop -----------------------------------------------------
+
+    @staticmethod
+    def _drop_privileges(user: str | None, group: str | None) -> None:
+        """Drop root privileges to *user*/*group* if configured.
+
+        Sets real+effective UID/GID so the daemon no longer runs as root.
+        Called after TAP device creation and all other privileged ops.
+        """
+        if user is None and group is None:
+            return
+
+        import grp
+        import pwd
+
+        if group is not None:
+            try:
+                gr = grp.getgrnam(group)
+            except KeyError:
+                raise ValueError(f"RunAsGroup: group {group!r} not found") from None
+            os.setgid(gr.gr_gid)
+            os.setgroups([])
+            log.info("Dropped group to %s (gid=%d)", group, gr.gr_gid)
+
+        if user is not None:
+            try:
+                pw = pwd.getpwnam(user)
+            except KeyError:
+                raise ValueError(f"RunAsUser: user {user!r} not found") from None
+            # Set supplementary groups for the target user when no explicit
+            # group was requested, so the process inherits the user's
+            # default groups (matching normal login behaviour).
+            if group is None:
+                os.setgid(pw.pw_gid)
+                os.initgroups(user, pw.pw_gid)
+            os.setuid(pw.pw_uid)
+            log.info("Dropped user to %s (uid=%d)", user, pw.pw_uid)
 
     # -- TAP → mesh ---------------------------------------------------------
 
@@ -197,6 +242,17 @@ class MeshVPN:
 
             if not session.is_established:
                 log.debug("Dropping frame — session not ready for %s", peer_id)
+                continue
+
+            # Trigger deferred rekey on outgoing traffic.
+            if session.needs_rekey():
+                try:
+                    init_bytes = session.initiate_handshake()
+                    asyncio.create_task(
+                        self._send_raw(peer_id, init_bytes, want_ack=True)
+                    )
+                except Exception as exc:
+                    log.warning("Rekey initiation failed for %s: %s", peer_id, exc)
                 continue
 
             try:
