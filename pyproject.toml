@@ -1,5 +1,5 @@
 [project]
-name = "meshtastic-net"
+name = "meshnet"
 version = "0.1.0"
 description = "MeshNet: WireGuard-like VPN over Meshtastic mesh radio"
 readme = "README.md"
