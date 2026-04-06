@@ -10,5 +10,6 @@ wheels/
 .venv
 .agents
 *.conf
-!example*.conf
-docker-compose-*.yaml
+.github
+Dockerfile
+docker-*

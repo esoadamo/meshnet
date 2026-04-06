@@ -1,0 +1,40 @@
+services:
+  meshnet:
+    image: docker.io/esoadamo/meshnet:latest
+    build: .
+    command: ["up", "-c", "/etc/meshnet/meshnet.conf"]
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./meshnet.conf:/etc/meshnet/meshnet.conf:ro,Z
+    # Uncomment for serial Meshtastic connection:
+    # - /dev/ttyACM0:/dev/ttyACM0
+
+  openssh-server:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: openssh-server
+    hostname: openssh-server #optional
+    network_mode: service:meshnet
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PUBLIC_KEY=yourpublickey #optional
+      - PUBLIC_KEY_FILE=/path/to/file #optional
+      - PUBLIC_KEY_DIR=/path/to/directory/containing/_only_/pubkeys #optional
+      - PUBLIC_KEY_URL=https://github.com/username.keys #optional
+      - SUDO_ACCESS=false #optional
+      - PASSWORD_ACCESS=false #optional
+      - USER_PASSWORD=password #optional
+      - USER_PASSWORD_FILE=/path/to/file #optional
+      - USER_NAME=linuxserver.io #optional
+      - LOG_STDOUT= #optional
+    volumes:
+      - openssh-server-config:/config
+    restart: unless-stopped
+
+volumes:
+  openssh-server-config:
