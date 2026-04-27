@@ -120,16 +120,16 @@ class TestTransportData:
         ct = b"\xAA" * 50
         pkt = TransportData(counter=0, ciphertext=ct)
         wire = pkt.serialize()
-        # 1 (type) + 8 (counter) + 50 (ct) = 59
-        assert len(wire) == 59
+        # 1 (type) + 12 (counter) + 50 (ct) = 63
+        assert len(wire) == 63
 
     def test_payload_bytes(self):
         ct = b"\xBB" * 20
         pkt = TransportData(counter=7, ciphertext=ct)
         payload = pkt.payload_bytes()
-        # 8 (counter) + 20 (ct) = 28
-        assert len(payload) == 28
-        assert payload[8:] == ct
+        # 12 (counter) + 20 (ct) = 32
+        assert len(payload) == 32
+        assert payload[12:] == ct
 
     def test_deserialize_too_short(self):
         with pytest.raises(ValueError, match="too short"):
@@ -141,11 +141,11 @@ class TestTransportData:
         pkt2 = TransportData.deserialize(wire[1:])
         assert pkt2.counter == 0
 
-    def test_counter_max_u64(self):
-        pkt = TransportData(counter=2**64 - 1, ciphertext=b"data")
+    def test_counter_max_u96(self):
+        pkt = TransportData(counter=2**96 - 1, ciphertext=b"data")
         wire = pkt.serialize()
         pkt2 = TransportData.deserialize(wire[1:])
-        assert pkt2.counter == 2**64 - 1
+        assert pkt2.counter == 2**96 - 1
 
 
 # ---------------------------------------------------------------------------

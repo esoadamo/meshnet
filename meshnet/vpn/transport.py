@@ -8,7 +8,7 @@ Type   Name                Layout (after type byte)
 =====  ==================  ==============================================
 0x01   HandshakeInit       session(4) + eph_pub(32) + mac(16)  = 52 bytes
 0x02   HandshakeResponse   sender(4) + recv(4) + eph_pub(32) + mac(16) = 56 bytes
-0x03   TransportData       counter(8) + ciphertext(N)
+0x03   TransportData       counter(12) + ciphertext(N)
 0x04   TransportFragment   msg_id(2) + frag_idx(1) + frag_total(1) + chunk(N)
 =====  ==================  ==============================================
 """
@@ -105,21 +105,22 @@ class HandshakeResponse:
 
 # -- Transport Data (0x03) --------------------------------------------------
 
-_TRANSPORT_COUNTER_FMT = "<Q"  # counter_u64
-_TRANSPORT_HEADER_SIZE = struct.calcsize(_TRANSPORT_COUNTER_FMT)  # 8
+# 96-bit counter stored as 12 little-endian bytes — uses the full nonce range.
+_TRANSPORT_COUNTER_SIZE = 12
+_TRANSPORT_HEADER_SIZE = _TRANSPORT_COUNTER_SIZE
 
 
 @dataclass(frozen=True, slots=True)
 class TransportData:
     """Encrypted Ethernet frame payload."""
 
-    counter: int  # uint64
+    counter: int  # uint96 (12 bytes on the wire)
     ciphertext: bytes  # variable length (includes 16-byte Poly1305 tag)
 
     def serialize(self) -> bytes:
         return (
             bytes([MessageType.TRANSPORT_DATA])
-            + struct.pack(_TRANSPORT_COUNTER_FMT, self.counter)
+            + self.counter.to_bytes(_TRANSPORT_COUNTER_SIZE, "little")
             + self.ciphertext
         )
 
@@ -127,13 +128,13 @@ class TransportData:
     def deserialize(cls, data: bytes) -> TransportData:
         if len(data) < _TRANSPORT_HEADER_SIZE + 1:
             raise ValueError("TransportData: payload too short")
-        (counter,) = struct.unpack_from(_TRANSPORT_COUNTER_FMT, data)
+        counter = int.from_bytes(data[:_TRANSPORT_HEADER_SIZE], "little")
         ciphertext = data[_TRANSPORT_HEADER_SIZE:]
         return cls(counter=counter, ciphertext=ciphertext)
 
     def payload_bytes(self) -> bytes:
         """Serialized payload without the type byte (for fragmentation)."""
-        return struct.pack(_TRANSPORT_COUNTER_FMT, self.counter) + self.ciphertext
+        return self.counter.to_bytes(_TRANSPORT_COUNTER_SIZE, "little") + self.ciphertext
 
 
 # -- Transport Fragment (0x04) ----------------------------------------------
@@ -286,7 +287,7 @@ class Fragmenter:
         # All fragments received — reassemble.
         del self._buffers[key]
         payload = b"".join(buf.chunks[i] for i in range(buf.total))
-        # payload = counter(8) + ciphertext(N)
+        # payload = counter(12) + ciphertext(N)
         return TransportData.deserialize(payload)
 
     def gc_stale(self) -> int:

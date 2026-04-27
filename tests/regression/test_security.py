@@ -250,9 +250,9 @@ class TestFragmentationEdgeCases:
         """A TransportData whose serialized form is exactly MAX_MESHTASTIC_PAYLOAD should NOT be fragmented."""
         from meshnet.vpn.transport import MAX_MESHTASTIC_PAYLOAD
 
-        # Type byte (1) + counter (8) + ciphertext = 233
-        # → ciphertext must be 233 - 9 = 224 bytes
-        ct_len = MAX_MESHTASTIC_PAYLOAD - 9
+        # Type byte (1) + counter (12) + ciphertext = 233
+        # → ciphertext must be 233 - 13 = 220 bytes
+        ct_len = MAX_MESHTASTIC_PAYLOAD - 13
         pkt = TransportData(counter=0, ciphertext=os.urandom(ct_len))
         assert len(pkt.serialize()) == MAX_MESHTASTIC_PAYLOAD
 
@@ -265,7 +265,7 @@ class TestFragmentationEdgeCases:
         """One byte over the limit should trigger fragmentation."""
         from meshnet.vpn.transport import MAX_MESHTASTIC_PAYLOAD
 
-        ct_len = MAX_MESHTASTIC_PAYLOAD - 9 + 1
+        ct_len = MAX_MESHTASTIC_PAYLOAD - 13 + 1
         pkt = TransportData(counter=0, ciphertext=os.urandom(ct_len))
         assert len(pkt.serialize()) == MAX_MESHTASTIC_PAYLOAD + 1
 
