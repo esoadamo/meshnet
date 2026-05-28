@@ -1,8 +1,8 @@
 """Integration tests: two-device session recovery with mocked time and lossy channels.
 
-Tests cover four main scenarios for both PKI and Symmetric session modes:
+Tests cover four main scenarios for PKI session mode:
 
-1. **Good connection** — handshake completes (PKI) and a "hello world" frame
+1. **Good connection** — handshake completes and a "hello world" frame
    flows from one device to the other without loss.
 
 2. **Bad connection / init lost** — the HandshakeInit is dropped; after the
@@ -25,7 +25,7 @@ import asyncio
 import random
 from contextlib import contextmanager
 from typing import Iterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -36,7 +36,6 @@ from meshnet.vpn.session import (
     REKEY_DEFER_IDLE_SECONDS,
     PeerSession,
     SessionState,
-    SymmetricPeerSession,
 )
 from meshnet.vpn.transport import TransportData, parse_packet
 
@@ -492,191 +491,6 @@ class TestPKIBadConnection:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Symmetric mode — perfect channel
-# ---------------------------------------------------------------------------
-
-
-def _make_symmetric_pair() -> tuple[SymmetricPeerSession, SymmetricPeerSession]:
-    """Create two symmetric sessions sharing a freshly generated PSK."""
-    psk = generate_psk()
-    return SymmetricPeerSession("!b", psk), SymmetricPeerSession("!a", psk)
-
-
-class TestSymmetricGoodConnection:
-    """PSK-only symmetric sessions over a lossless channel."""
-
-    def test_hello_world_a_to_b(self) -> None:
-        """A symmetric session is immediately established; A sends to B."""
-        clock = MockClock()
-        with frozen_session_time(clock):
-            session_a, session_b = _make_symmetric_pair()
-            assert session_a.is_established
-            assert session_b.is_established
-
-            frame = b"hello world"
-            assert session_b.decrypt_frame(session_a.encrypt_frame(frame)) == frame
-
-    def test_hello_world_b_to_a(self) -> None:
-        clock = MockClock()
-        with frozen_session_time(clock):
-            session_a, session_b = _make_symmetric_pair()
-
-            frame = b"hello world"
-            assert session_a.decrypt_frame(session_b.encrypt_frame(frame)) == frame
-
-    def test_no_handshake_needed(self) -> None:
-        """Symmetric sessions bypass the IDLE → INIT_SENT → ESTABLISHED cycle."""
-        clock = MockClock()
-        with frozen_session_time(clock):
-            psk = generate_psk()
-            session_a = SymmetricPeerSession("!b", psk)
-            session_b = SymmetricPeerSession("!a", psk)
-
-            # Both start established — no initiate_handshake() call required.
-            assert session_a.state == SessionState.ESTABLISHED
-            assert session_b.state == SessionState.ESTABLISHED
-
-            for i in range(5):
-                msg = f"frame {i}".encode()
-                assert session_b.decrypt_frame(session_a.encrypt_frame(msg)) == msg
-
-    def test_bidirectional_multiple_frames(self) -> None:
-        clock = MockClock()
-        with frozen_session_time(clock):
-            session_a, session_b = _make_symmetric_pair()
-
-            for i in range(10):
-                msg = f"msg {i}".encode()
-                assert session_b.decrypt_frame(session_a.encrypt_frame(msg)) == msg
-                assert session_a.decrypt_frame(session_b.encrypt_frame(msg)) == msg
-
-    def test_never_needs_rekey_or_timeout(self) -> None:
-        """SymmetricPeerSession never reports timeout or rekey need."""
-        clock = MockClock()
-        with frozen_session_time(clock):
-            session_a, _ = _make_symmetric_pair()
-
-            clock.advance(REKEY_AFTER_SECONDS * 10)
-            assert not session_a.needs_rekey()
-            assert not session_a.init_timed_out()
-            assert session_a.is_established
-
-
-# ---------------------------------------------------------------------------
-# Tests: Symmetric mode — bad connection (packet loss)
-# ---------------------------------------------------------------------------
-
-
-class TestSymmetricBadConnection:
-    """Symmetric sessions remain usable when data packets are lost.
-
-    Symmetric sessions have no handshake, so there is no INIT_SENT to time
-    out.  "Recovery" means the session stays ESTABLISHED and subsequent
-    frames decrypt correctly after any number of losses.
-    """
-
-    def test_session_survives_many_lost_packets(self) -> None:
-        """A loses 50 outgoing frames; session is still alive for hello world."""
-        clock = MockClock()
-        with frozen_session_time(clock):
-            session_a, session_b = _make_symmetric_pair()
-
-            # Encrypt frames on A but never deliver them to B.
-            for i in range(50):
-                session_a.encrypt_frame(f"lost {i}".encode())
-
-            assert session_a.is_established
-            assert session_b.is_established
-
-            frame = b"hello world"
-            assert session_b.decrypt_frame(session_a.encrypt_frame(frame)) == frame
-
-    def test_partial_delivery_50_percent_loss(self) -> None:
-        """50% random loss: delivered frames decrypt; session stays usable."""
-        clock = MockClock()
-        with frozen_session_time(clock):
-            session_a, session_b = _make_symmetric_pair()
-
-            channel = LossyChannel(drop_probability=0.5, seed=12345)
-            received: list[bytes] = []
-            for i in range(40):
-                frame = f"frame {i}".encode()
-                transport = session_a.encrypt_frame(frame)
-                wire = transport.serialize()
-                delivered = channel.transmit(wire)
-                if delivered is not None:
-                    pkt = parse_packet(delivered)
-                    assert isinstance(pkt, TransportData)
-                    received.append(session_b.decrypt_frame(pkt))
-
-            # With a seeded 50% channel we expect some frames to arrive.
-            assert len(received) > 0
-
-            # Session is still alive.
-            assert session_a.is_established
-            assert session_b.is_established
-
-            # Final hello world must succeed.
-            frame = b"hello world"
-            assert session_b.decrypt_frame(session_a.encrypt_frame(frame)) == frame
-
-    def test_bidirectional_lossy_channel(self) -> None:
-        """Both directions can drop packets; session stays usable in both ways."""
-        clock = MockClock()
-        with frozen_session_time(clock):
-            session_a, session_b = _make_symmetric_pair()
-
-            ch_ab = LossyChannel(drop_probability=0.3, seed=1)
-            ch_ba = LossyChannel(drop_probability=0.3, seed=2)
-            received_by_b: list[bytes] = []
-            received_by_a: list[bytes] = []
-
-            for i in range(30):
-                # A → B
-                wire_ab = session_a.encrypt_frame(f"a→b {i}".encode()).serialize()
-                d_ab = ch_ab.transmit(wire_ab)
-                if d_ab is not None:
-                    received_by_b.append(
-                        session_b.decrypt_frame(parse_packet(d_ab))
-                    )
-                # B → A
-                wire_ba = session_b.encrypt_frame(f"b→a {i}".encode()).serialize()
-                d_ba = ch_ba.transmit(wire_ba)
-                if d_ba is not None:
-                    received_by_a.append(
-                        session_a.decrypt_frame(parse_packet(d_ba))
-                    )
-
-            assert len(received_by_b) > 0
-            assert len(received_by_a) > 0
-
-            # Final hello world in each direction.
-            assert session_b.decrypt_frame(session_a.encrypt_frame(b"hello world")) == b"hello world"
-            assert session_a.decrypt_frame(session_b.encrypt_frame(b"hello world")) == b"hello world"
-
-    def test_replay_rejected_but_fresh_packets_accepted(self) -> None:
-        """A replayed (duplicate) packet is rejected; the next fresh packet works."""
-        clock = MockClock()
-        with frozen_session_time(clock):
-            session_a, session_b = _make_symmetric_pair()
-
-            frame = b"frame A"
-            transport = session_a.encrypt_frame(frame)
-
-            # Deliver once — succeeds.
-            assert session_b.decrypt_frame(transport) == frame
-
-            # Replay — must be rejected.
-            with pytest.raises(ValueError, match="Replay detected"):
-                session_b.decrypt_frame(transport)
-
-            # A fresh frame — must succeed.
-            fresh = b"hello world"
-            fresh_transport = session_a.encrypt_frame(fresh)
-            assert session_b.decrypt_frame(fresh_transport) == fresh
-
-
-# ---------------------------------------------------------------------------
 # Daemon-level integration: two VPN instances wired together
 # ---------------------------------------------------------------------------
 
@@ -685,7 +499,6 @@ def _build_minimal_vpn(
     local_kp: KeyPair,
     peer_kp: KeyPair,
     peer_node_id: str,
-    mode: str = "PKI",
     psk: bytes | None = None,
 ) -> "MeshVPN":  # type: ignore[name-defined]
     """Construct a :class:`MeshVPN` with pre-populated sessions (no radio needed).
@@ -706,20 +519,14 @@ def _build_minimal_vpn(
     vpn._tasks = []
     vpn._unregister_listener = None
 
-    if mode == "SYMMETRIC":
-        assert psk is not None
-        vpn._sessions = {
-            peer_node_id: SymmetricPeerSession(peer_node_id, psk)
-        }
-    else:
-        vpn._sessions = {
-            peer_node_id: PeerSession(
-                peer_node_id,
-                peer_kp.public_bytes(),
-                local_kp,
-                preshared_key=psk,
-            )
-        }
+    vpn._sessions = {
+        peer_node_id: PeerSession(
+            peer_node_id,
+            peer_kp.public_bytes(),
+            local_kp,
+            preshared_key=psk,
+        )
+    }
     return vpn
 
 
@@ -844,51 +651,3 @@ class TestDaemonTwoDevicePKI:
             assert vpn_b._tap.written_frames[-1] == frame  # type: ignore[union-attr]
 
 
-class TestDaemonTwoDeviceSymmetric:
-    """Two MeshVPN instances in SYMMETRIC mode."""
-
-    @pytest.mark.asyncio
-    async def test_good_connection_hello_world(self) -> None:
-        """Symmetric mode: hello world flows without any handshake."""
-        psk = generate_psk()
-        kp_a = KeyPair.generate()
-        kp_b = KeyPair.generate()
-
-        vpn_a = _build_minimal_vpn(kp_a, kp_b, "!node_b", mode="SYMMETRIC", psk=psk)
-        vpn_b = _build_minimal_vpn(kp_b, kp_a, "!node_a", mode="SYMMETRIC", psk=psk)
-
-        # Both sessions are immediately established.
-        assert vpn_a._sessions["!node_b"].is_established
-        assert vpn_b._sessions["!node_a"].is_established
-
-        session_a: SymmetricPeerSession = vpn_a._sessions["!node_b"]  # type: ignore[assignment]
-        frame = b"hello world" + b"\x00" * 20
-        transport_pkt = session_a.encrypt_frame(frame)
-
-        await vpn_b._process_incoming("!node_a", transport_pkt.serialize())
-        assert vpn_b._tap.written_frames[-1] == frame  # type: ignore[union-attr]
-
-    @pytest.mark.asyncio
-    async def test_bad_connection_session_stays_established(self) -> None:
-        """Lost transport packets: symmetric session stays ESTABLISHED throughout."""
-        psk = generate_psk()
-        kp_a = KeyPair.generate()
-        kp_b = KeyPair.generate()
-
-        vpn_a = _build_minimal_vpn(kp_a, kp_b, "!node_b", mode="SYMMETRIC", psk=psk)
-        vpn_b = _build_minimal_vpn(kp_b, kp_a, "!node_a", mode="SYMMETRIC", psk=psk)
-
-        session_a: SymmetricPeerSession = vpn_a._sessions["!node_b"]  # type: ignore[assignment]
-
-        # Encrypt many frames on A but never deliver them to B.
-        for i in range(30):
-            session_a.encrypt_frame(f"lost {i}".encode())
-
-        assert session_a.is_established
-        assert vpn_b._sessions["!node_a"].is_established
-
-        # A hello world sent after the losses must still reach B.
-        frame = b"hello world" + b"\x00" * 20
-        transport_pkt = session_a.encrypt_frame(frame)
-        await vpn_b._process_incoming("!node_a", transport_pkt.serialize())
-        assert vpn_b._tap.written_frames[-1] == frame  # type: ignore[union-attr]
