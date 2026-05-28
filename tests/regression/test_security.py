@@ -293,3 +293,162 @@ class TestFragmentationEdgeCases:
 
         # Should still be incomplete
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# State machine: MAC is checked regardless of session state
+# ---------------------------------------------------------------------------
+
+
+class TestStateMachineMACEnforcement:
+    """Verify that MAC verification occurs regardless of session state transitions."""
+
+    def test_init_mac_checked_when_already_established(self):
+        """When an ESTABLISHED session receives a new INIT, the MAC must still
+        be validated (the INIT triggers a re-handshake)."""
+        a, b = _establish_pair()
+        assert b.state == SessionState.ESTABLISHED
+
+        # Create a new INIT from a but with tampered MAC
+        init_bytes = a.initiate_handshake()
+        init_pkt = parse_packet(init_bytes)
+        tampered_mac = bytearray(init_pkt.mac)
+        tampered_mac[0] ^= 0xFF
+        bad_init = HandshakeInit(
+            sender_session=init_pkt.sender_session,
+            ephemeral_pubkey=init_pkt.ephemeral_pubkey,
+            mac=bytes(tampered_mac),
+        )
+        with pytest.raises(ValueError, match="MAC verification failed"):
+            b.respond_to_handshake(bad_init)
+
+    def test_good_init_when_already_established_rekeys(self):
+        """A valid new INIT when already ESTABLISHED should succeed (re-handshake)."""
+        a, b = _establish_pair()
+        old_send_key = b.send_key
+
+        init_bytes = a.initiate_handshake()
+        init_pkt = parse_packet(init_bytes)
+        b.respond_to_handshake(init_pkt)
+
+        assert b.state == SessionState.ESTABLISHED
+        # New ephemeral key → new transport keys
+        assert b.send_key != old_send_key
+
+    def test_simultaneous_init_both_macs_validated(self):
+        """When both sides initiate simultaneously, each INIT's MAC is
+        independently validated."""
+        kp_a = KeyPair.generate()
+        kp_b = KeyPair.generate()
+
+        a = PeerSession("!b", kp_b.public_bytes(), kp_a)
+        b = PeerSession("!a", kp_a.public_bytes(), kp_b)
+
+        # Both initiate
+        init_a_bytes = a.initiate_handshake()
+        init_b_bytes = b.initiate_handshake()
+
+        assert a.state == SessionState.INIT_SENT
+        assert b.state == SessionState.INIT_SENT
+
+        # Both INITs should have valid MACs that pass verification
+        init_a_pkt = parse_packet(init_a_bytes)
+        init_b_pkt = parse_packet(init_b_bytes)
+
+        # b processing a's init should succeed (MAC is valid)
+        b.respond_to_handshake(init_a_pkt)
+        assert b.state == SessionState.ESTABLISHED
+
+        # a processing b's init should also succeed (MAC is valid)
+        a.respond_to_handshake(init_b_pkt)
+        assert a.state == SessionState.ESTABLISHED
+
+
+# ---------------------------------------------------------------------------
+# MAC per-peer isolation
+# ---------------------------------------------------------------------------
+
+
+class TestMACPerPeerIsolation:
+    """Verify that an INIT MAC computed for peer B cannot be accepted by peer C."""
+
+    def test_init_mac_is_peer_specific(self):
+        """An INIT authenticated for peer B is rejected by peer C."""
+        kp_a = KeyPair.generate()
+        kp_b = KeyPair.generate()
+        kp_c = KeyPair.generate()
+
+        a_to_b = PeerSession("!b", kp_b.public_bytes(), kp_a)
+        c_listening = PeerSession("!a", kp_a.public_bytes(), kp_c)
+
+        init_bytes = a_to_b.initiate_handshake()
+        init_pkt = parse_packet(init_bytes)
+
+        with pytest.raises(ValueError, match="MAC verification failed"):
+            c_listening.respond_to_handshake(init_pkt)
+
+    def test_response_mac_is_session_specific(self):
+        """A response MAC from one handshake cannot be reused for another."""
+        a, b = _establish_pair()
+
+        # Start a new handshake
+        kp_a2 = KeyPair.generate()
+        kp_b2 = KeyPair.generate()
+        a2 = PeerSession("!b", kp_b2.public_bytes(), kp_a2)
+        b2 = PeerSession("!a", kp_a2.public_bytes(), kp_b2)
+
+        init_bytes = a2.initiate_handshake()
+        init_pkt = parse_packet(init_bytes)
+        resp_bytes = b2.respond_to_handshake(init_pkt)
+        resp_pkt = parse_packet(resp_bytes)
+
+        # Try to use b2's response on a2's handshake — this should work normally
+        a2.complete_handshake(resp_pkt)
+        assert a2.state == SessionState.ESTABLISHED
+
+        # But using a different response with wrong session IDs on a new session fails
+        a3 = PeerSession("!b", kp_b2.public_bytes(), kp_a2)
+        a3.initiate_handshake()
+        # resp_pkt's receiver_session won't match a3's session ID
+        with pytest.raises(ValueError, match="Session mismatch"):
+            a3.complete_handshake(resp_pkt)
+
+
+# ---------------------------------------------------------------------------
+# Wrong static key in both directions
+# ---------------------------------------------------------------------------
+
+
+class TestWrongStaticKeyFailsBothDirections:
+    """Both INIT and RESPONSE MAC fail when static keys are mismatched."""
+
+    def test_wrong_peer_key_for_init(self):
+        """Responder configured with wrong initiator public key → INIT MAC fails."""
+        kp_a = KeyPair.generate()
+        kp_b = KeyPair.generate()
+        kp_wrong = KeyPair.generate()
+
+        a = PeerSession("!b", kp_b.public_bytes(), kp_a)
+        b_wrong = PeerSession("!a", kp_wrong.public_bytes(), kp_b)
+
+        init_bytes = a.initiate_handshake()
+        init_pkt = parse_packet(init_bytes)
+
+        with pytest.raises(ValueError, match="MAC verification failed"):
+            b_wrong.respond_to_handshake(init_pkt)
+
+    def test_wrong_own_key_for_init(self):
+        """Responder using wrong own private key → INIT MAC fails."""
+        kp_a = KeyPair.generate()
+        kp_b = KeyPair.generate()
+        kp_b_wrong = KeyPair.generate()
+
+        a = PeerSession("!b", kp_b.public_bytes(), kp_a)
+        # b_wrong uses wrong private key but correct peer public key
+        b_wrong = PeerSession("!a", kp_a.public_bytes(), kp_b_wrong)
+
+        init_bytes = a.initiate_handshake()
+        init_pkt = parse_packet(init_bytes)
+
+        with pytest.raises(ValueError, match="MAC verification failed"):
+            b_wrong.respond_to_handshake(init_pkt)
