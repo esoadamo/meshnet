@@ -336,7 +336,15 @@ class MeshVPN:
                 )
                 return
 
-            response_bytes = session.respond_to_handshake(pkt)
+            try:
+                response_bytes = session.respond_to_handshake(pkt)
+            except ValueError as exc:
+                log.info(
+                    "Ignoring HandshakeInit from %s: %s",
+                    sender,
+                    exc,
+                )
+                return
             await self._send_raw(sender, response_bytes, want_ack=True)
 
         elif isinstance(pkt, HandshakeResponse):

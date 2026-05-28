@@ -48,7 +48,7 @@ log = logging.getLogger(__name__)
 
 REKEY_AFTER_SECONDS: int = 18000  # 5 hours
 REKEY_AFTER_MESSAGES: int = 2**16
-REJECT_AFTER_MESSAGES: int = 2**64 - 1
+REJECT_AFTER_MESSAGES: int = 2**96 - 1
 INIT_TIMEOUT_SECONDS: int = 30  # drop back to IDLE if no response
 REKEY_DEFER_IDLE_SECONDS: int = 1800  # defer rekey if no traffic for 30 minutes
 
@@ -365,7 +365,7 @@ class SymmetricPeerSession:
     Both sides use the same derived key for both directions; replay
     protection is identical to :class:`PeerSession`.
 
-    The send counter starts at a random 64-bit value to prevent nonce
+    The send counter starts at a random 96-bit value to prevent nonce
     reuse across restarts (the derived key is static for a given PSK).
     """
 
@@ -378,7 +378,7 @@ class SymmetricPeerSession:
         self._key: bytes = derive_symmetric_key(preshared_key)
 
         self.state: SessionState = SessionState.ESTABLISHED
-        self.send_counter: int = int.from_bytes(os.urandom(8), "little")
+        self.send_counter: int = int.from_bytes(os.urandom(12), "little")
         self.recv_counter_max: int = 0
         self._recv_counter_seen: set[int] = set()
         self._recv_counter_window_floor: int = 0

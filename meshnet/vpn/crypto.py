@@ -165,16 +165,17 @@ def derive_transport_keys(
 def encrypt(key: bytes, counter: int, plaintext: bytes) -> bytes:
     """ChaCha20-Poly1305 AEAD encrypt.
 
-    Nonce is an 8-byte little-endian *counter* zero-padded to 12 bytes.
+    The full 12-byte (96-bit) nonce is filled by the *counter* encoded as a
+    little-endian integer, using the entire nonce range.
     Returns ``ciphertext || tag`` (16-byte Poly1305 tag appended).
 
-    :raises OverflowError: if *counter* exceeds the 8-byte nonce space.
+    :raises OverflowError: if *counter* exceeds the 96-bit nonce space.
     """
-    if counter < 0 or counter >= 2**64:
+    if counter < 0 or counter >= 2**96:
         raise OverflowError(
-            f"Nonce counter out of range: {counter} (must be 0..2^64-1)"
+            f"Nonce counter out of range: {counter} (must be 0..2^96-1)"
         )
-    nonce = counter.to_bytes(8, "little") + b"\x00" * 4
+    nonce = counter.to_bytes(12, "little")
     return ChaCha20Poly1305(key).encrypt(nonce, plaintext, associated_data=None)
 
 
@@ -183,13 +184,13 @@ def decrypt(key: bytes, counter: int, ciphertext: bytes) -> bytes:
 
     Raises ``cryptography.exceptions.InvalidTag`` on authentication failure.
 
-    :raises OverflowError: if *counter* exceeds the 8-byte nonce space.
+    :raises OverflowError: if *counter* exceeds the 96-bit nonce space.
     """
-    if counter < 0 or counter >= 2**64:
+    if counter < 0 or counter >= 2**96:
         raise OverflowError(
-            f"Nonce counter out of range: {counter} (must be 0..2^64-1)"
+            f"Nonce counter out of range: {counter} (must be 0..2^96-1)"
         )
-    nonce = counter.to_bytes(8, "little") + b"\x00" * 4
+    nonce = counter.to_bytes(12, "little")
     return ChaCha20Poly1305(key).decrypt(nonce, ciphertext, associated_data=None)
 
 
