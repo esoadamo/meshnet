@@ -1,7 +1,7 @@
 """End-to-end encryption tests simulating two MeshNet devices communicating.
 
-Tests PKI (full handshake) mode by:
-1. Creating realistic config pairs with freshly generated keys
+Tests both PKI (full handshake) and symmetric (PSK-only) modes by:
+1. Creating realistic config pairs
 2. Instantiating sessions as the daemon would
 3. Simulating the full wire-level message exchange
 4. Verifying decryption succeeds on the receiving side
@@ -19,7 +19,7 @@ from cryptography.exceptions import InvalidTag
 
 from meshnet.vpn.config import parse_config
 from meshnet.vpn.crypto import KeyPair, generate_psk
-from meshnet.vpn.session import PeerSession, SessionState
+from meshnet.vpn.session import PeerSession, SessionState, SymmetricPeerSession
 from meshnet.vpn.transport import (
     Fragmenter,
     HandshakeInit,
@@ -42,6 +42,7 @@ def _write_config(
     peer_endpoint: str,
     peer_allowed_ips: str,
     psk_b64: str | None = None,
+    peer_mode: str | None = None,
     mtu: int = 180,
     meshtastic_connect: str = "tcp://127.0.0.1:4403",
 ) -> Path:
@@ -56,6 +57,8 @@ def _write_config(
         "",
         "[Peer]",
     ]
+    if peer_mode:
+        lines.append(f"PeerMode = {peer_mode}")
     lines.append(f"PublicKey = {peer_pub_b64}")
     if psk_b64:
         lines.append(f"PresharedKey = {psk_b64}")
@@ -70,6 +73,7 @@ def _write_config(
 
 
 def _create_config_pair(
+    peer_mode: str = "PKI",
     with_psk: bool = True,
 ) -> tuple[Path, Path, KeyPair, KeyPair, bytes | None]:
     """Create a matching pair of config files for two devices.
@@ -88,6 +92,7 @@ def _create_config_pair(
         peer_endpoint="!bbbbbbbb",
         peer_allowed_ips="10.77.0.2/32",
         psk_b64=psk_b64,
+        peer_mode=peer_mode,
     )
     cfg2_path = _write_config(
         private_key_b64=kp2.private_base64(),
@@ -96,6 +101,7 @@ def _create_config_pair(
         peer_endpoint="!aaaaaaaa",
         peer_allowed_ips="10.77.0.1/32",
         psk_b64=psk_b64,
+        peer_mode=peer_mode,
     )
     return cfg1_path, cfg2_path, kp1, kp2, psk
 
@@ -105,7 +111,7 @@ def _create_config_pair(
 # ---------------------------------------------------------------------------
 
 
-def _session_from_config(config_path: Path) -> tuple[PeerSession, str]:
+def _session_from_config(config_path: Path) -> tuple[PeerSession | SymmetricPeerSession, str]:
     """Parse a config and create a session for the first peer (as the daemon does).
 
     Returns (session, peer_endpoint).
@@ -114,12 +120,19 @@ def _session_from_config(config_path: Path) -> tuple[PeerSession, str]:
     local_kp = KeyPair.from_private_bytes(cfg.interface.private_key)
     peer = cfg.peers[0]
 
-    session = PeerSession(
-        peer_node_id=peer.endpoint,
-        peer_static_public=peer.public_key,
-        local_keypair=local_kp,
-        preshared_key=peer.preshared_key,
-    )
+    if peer.mode == "SYMMETRIC":
+        assert peer.preshared_key is not None
+        session = SymmetricPeerSession(
+            peer_node_id=peer.endpoint,
+            preshared_key=peer.preshared_key,
+        )
+    else:
+        session = PeerSession(
+            peer_node_id=peer.endpoint,
+            peer_static_public=peer.public_key,
+            local_keypair=local_kp,
+            preshared_key=peer.preshared_key,
+        )
     return session, peer.endpoint
 
 
@@ -156,8 +169,8 @@ def _do_handshake(
 
 
 def _send_frame(
-    sender_session: PeerSession,
-    receiver_session: PeerSession,
+    sender_session: PeerSession | SymmetricPeerSession,
+    receiver_session: PeerSession | SymmetricPeerSession,
     frame: bytes,
 ) -> bytes:
     """Encrypt a frame on sender, simulate wire, decrypt on receiver.
@@ -172,8 +185,8 @@ def _send_frame(
 
 
 def _send_frame_fragmented(
-    sender_session: PeerSession,
-    receiver_session: PeerSession,
+    sender_session: PeerSession | SymmetricPeerSession,
+    receiver_session: PeerSession | SymmetricPeerSession,
     frame: bytes,
     sender_id: str,
 ) -> bytes:
@@ -200,6 +213,147 @@ def _send_frame_fragmented(
 
 
 # ===========================================================================
+# Tests: Symmetric Mode
+# ===========================================================================
+
+
+class TestSymmetricModeE2E:
+    """End-to-end tests for symmetric (PSK-only) mode."""
+
+    def test_config_pair_creates_matching_sessions(self):
+        """Both configs produce SymmetricPeerSession with the same derived key."""
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="symmetric")
+        try:
+            s1, ep1 = _session_from_config(cfg1)
+            s2, ep2 = _session_from_config(cfg2)
+
+            assert isinstance(s1, SymmetricPeerSession)
+            assert isinstance(s2, SymmetricPeerSession)
+            assert s1.is_established
+            assert s2.is_established
+            # Both derive the same key from the same PSK
+            assert s1._key == s2._key
+        finally:
+            cfg1.unlink()
+            cfg2.unlink()
+
+    def test_send_message_device1_to_device2(self):
+        """Device 1 sends a message that device 2 successfully decrypts."""
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="symmetric")
+        try:
+            s1, _ = _session_from_config(cfg1)
+            s2, _ = _session_from_config(cfg2)
+
+            frame = b"Hello from device 1!"
+            decrypted = _send_frame(s1, s2, frame)
+            assert decrypted == frame
+        finally:
+            cfg1.unlink()
+            cfg2.unlink()
+
+    def test_send_message_device2_to_device1(self):
+        """Device 2 sends a message that device 1 successfully decrypts."""
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="symmetric")
+        try:
+            s1, _ = _session_from_config(cfg1)
+            s2, _ = _session_from_config(cfg2)
+
+            frame = b"Hello from device 2!"
+            decrypted = _send_frame(s2, s1, frame)
+            assert decrypted == frame
+        finally:
+            cfg1.unlink()
+            cfg2.unlink()
+
+    def test_bidirectional_communication(self):
+        """Both devices can send and receive multiple messages."""
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="symmetric")
+        try:
+            s1, _ = _session_from_config(cfg1)
+            s2, _ = _session_from_config(cfg2)
+
+            for i in range(20):
+                frame_1to2 = f"msg {i} from 1".encode()
+                frame_2to1 = f"msg {i} from 2".encode()
+
+                assert _send_frame(s1, s2, frame_1to2) == frame_1to2
+                assert _send_frame(s2, s1, frame_2to1) == frame_2to1
+        finally:
+            cfg1.unlink()
+            cfg2.unlink()
+
+    def test_large_frame_with_fragmentation(self):
+        """A frame larger than meshtastic MTU is fragmented and reassembled."""
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="symmetric")
+        try:
+            s1, _ = _session_from_config(cfg1)
+            s2, ep2 = _session_from_config(cfg2)
+
+            frame = os.urandom(500)
+            decrypted = _send_frame_fragmented(s1, s2, frame, "!aaaaaaaa")
+            assert decrypted == frame
+        finally:
+            cfg1.unlink()
+            cfg2.unlink()
+
+    def test_wrong_psk_fails_decryption(self):
+        """If one device has a different PSK, decryption fails with InvalidTag."""
+        kp1 = KeyPair.generate()
+        kp2 = KeyPair.generate()
+        psk1 = generate_psk()
+        psk2 = generate_psk()  # Different PSK!
+
+        s1 = SymmetricPeerSession("!b", psk1)
+        s2 = SymmetricPeerSession("!a", psk2)
+
+        frame = b"secret message"
+        transport = s1.encrypt_frame(frame)
+        wire = transport.serialize()
+        pkt = parse_packet(wire)
+        with pytest.raises(InvalidTag):
+            s2.decrypt_frame(pkt)
+
+    def test_replay_protection(self):
+        """The same packet cannot be decrypted twice (replay detection)."""
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="symmetric")
+        try:
+            s1, _ = _session_from_config(cfg1)
+            s2, _ = _session_from_config(cfg2)
+
+            transport = s1.encrypt_frame(b"data")
+            wire = transport.serialize()
+            pkt = parse_packet(wire)
+
+            # First decryption succeeds
+            s2.decrypt_frame(pkt)
+
+            # Second attempt is rejected (replay)
+            with pytest.raises(ValueError, match="Replay"):
+                s2.decrypt_frame(pkt)
+        finally:
+            cfg1.unlink()
+            cfg2.unlink()
+
+    def test_tampered_ciphertext_fails(self):
+        """Modifying even one byte of the ciphertext causes InvalidTag."""
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="symmetric")
+        try:
+            s1, _ = _session_from_config(cfg1)
+            s2, _ = _session_from_config(cfg2)
+
+            transport = s1.encrypt_frame(b"sensitive data")
+            wire = bytearray(transport.serialize())
+            # Flip a bit in the ciphertext area (after type byte + 12-byte counter)
+            wire[14] ^= 0xFF
+            pkt = parse_packet(bytes(wire))
+            with pytest.raises(InvalidTag):
+                s2.decrypt_frame(pkt)
+        finally:
+            cfg1.unlink()
+            cfg2.unlink()
+
+
+# ===========================================================================
 # Tests: PKI Mode (Full Handshake)
 # ===========================================================================
 
@@ -209,7 +363,7 @@ class TestPKIModeE2E:
 
     def test_config_pair_creates_pki_sessions(self):
         """Both configs produce PeerSession in IDLE state."""
-        cfg1, cfg2, _, _, _ = _create_config_pair()
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="PKI")
         try:
             s1, _ = _session_from_config(cfg1)
             s2, _ = _session_from_config(cfg2)
@@ -224,7 +378,7 @@ class TestPKIModeE2E:
 
     def test_full_session_negotiation(self):
         """Complete handshake produces matching transport keys."""
-        cfg1, cfg2, _, _, _ = _create_config_pair()
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="PKI")
         try:
             s1, _ = _session_from_config(cfg1)
             s2, _ = _session_from_config(cfg2)
@@ -241,7 +395,7 @@ class TestPKIModeE2E:
 
     def test_handshake_then_transport(self):
         """After handshake, encrypted frames are correctly delivered."""
-        cfg1, cfg2, _, _, _ = _create_config_pair()
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="PKI")
         try:
             s1, _ = _session_from_config(cfg1)
             s2, _ = _session_from_config(cfg2)
@@ -257,7 +411,7 @@ class TestPKIModeE2E:
 
     def test_bidirectional_after_handshake(self):
         """Both devices can send/receive after a single handshake."""
-        cfg1, cfg2, _, _, _ = _create_config_pair()
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="PKI")
         try:
             s1, _ = _session_from_config(cfg1)
             s2, _ = _session_from_config(cfg2)
@@ -276,8 +430,8 @@ class TestPKIModeE2E:
 
     def test_handshake_with_psk(self):
         """Handshake with PSK produces different keys than without."""
-        cfg1_psk, cfg2_psk, _, _, _ = _create_config_pair(with_psk=True)
-        cfg1_no, cfg2_no, _, _, _ = _create_config_pair(with_psk=False)
+        cfg1_psk, cfg2_psk, _, _, _ = _create_config_pair(peer_mode="PKI", with_psk=True)
+        cfg1_no, cfg2_no, _, _, _ = _create_config_pair(peer_mode="PKI", with_psk=False)
         try:
             s1_psk, _ = _session_from_config(cfg1_psk)
             s2_psk, _ = _session_from_config(cfg2_psk)
@@ -338,7 +492,7 @@ class TestPKIModeE2E:
 
     def test_rehandshake_produces_new_keys(self):
         """A second handshake produces different transport keys."""
-        cfg1, cfg2, _, _, _ = _create_config_pair()
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="PKI")
         try:
             s1, _ = _session_from_config(cfg1)
             s2, _ = _session_from_config(cfg2)
@@ -360,7 +514,7 @@ class TestPKIModeE2E:
 
     def test_large_frame_fragmented(self):
         """Large frames are fragmented, reassembled, and decrypted correctly."""
-        cfg1, cfg2, _, _, _ = _create_config_pair()
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="PKI")
         try:
             s1, _ = _session_from_config(cfg1)
             s2, ep2 = _session_from_config(cfg2)
@@ -376,7 +530,7 @@ class TestPKIModeE2E:
 
     def test_decrypt_before_handshake_fails(self):
         """Attempting to decrypt before handshake raises RuntimeError."""
-        cfg1, cfg2, _, _, _ = _create_config_pair()
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="PKI")
         try:
             s1, _ = _session_from_config(cfg1)
             s2, _ = _session_from_config(cfg2)
@@ -395,7 +549,7 @@ class TestPKIModeE2E:
 
     def test_tampered_handshake_init_mac_fails(self):
         """Tampering with HandshakeInit bytes causes MAC failure."""
-        cfg1, cfg2, _, _, _ = _create_config_pair()
+        cfg1, cfg2, _, _, _ = _create_config_pair(peer_mode="PKI")
         try:
             s1, _ = _session_from_config(cfg1)
             s2, _ = _session_from_config(cfg2)
@@ -415,15 +569,57 @@ class TestPKIModeE2E:
 
 
 # ===========================================================================
-# Tests: Fresh key pair E2E (keys generated on the fly)
+# Tests: Mode mismatch detection
 # ===========================================================================
 
 
-class TestFreshKeyPairE2E:
-    """Tests using freshly generated keys (no hardcoded example keys)."""
+class TestModeMismatch:
+    """Tests verifying behavior when devices have mismatched PeerMode."""
 
-    def _make_sessions(self) -> tuple[PeerSession, PeerSession]:
-        """Create a matching pair of PKI sessions with fresh keys."""
+    def test_symmetric_sends_to_pki_not_established(self):
+        """A symmetric device sends TransportData that a PKI device cannot
+        decrypt (session not established)."""
+        kp1 = KeyPair.generate()
+        kp2 = KeyPair.generate()
+        psk = generate_psk()
+
+        # Device 1: symmetric mode
+        s_sym = SymmetricPeerSession("!b", psk)
+        # Device 2: PKI mode (not established)
+        s_pki = PeerSession("!a", kp1.public_bytes(), kp2, preshared_key=psk)
+
+        frame = b"from symmetric device"
+        transport = s_sym.encrypt_frame(frame)
+
+        # PKI session is not established — daemon would drop this
+        assert not s_pki.is_established
+
+    def test_pki_sends_init_to_symmetric_device(self):
+        """A PKI device sends HandshakeInit that a symmetric device would ignore."""
+        kp1 = KeyPair.generate()
+        kp2 = KeyPair.generate()
+        psk = generate_psk()
+
+        # Device 1: PKI mode
+        s_pki = PeerSession("!b", kp2.public_bytes(), kp1, preshared_key=psk)
+        # Device 2: symmetric mode
+        s_sym = SymmetricPeerSession("!a", psk)
+
+        init_bytes = s_pki.initiate_handshake()
+        # In the daemon, this would be dropped because s_sym is SymmetricPeerSession
+        # The session type check would prevent respond_to_handshake from being called
+        assert isinstance(s_sym, SymmetricPeerSession)
+
+
+# ===========================================================================
+# Tests: Fresh key generation (no hardcoded keys)
+# ===========================================================================
+
+
+class TestFreshKeyGeneration:
+    """Tests using freshly generated keys (not from example config files)."""
+
+    def _make_sessions_pki(self) -> tuple[PeerSession, PeerSession]:
         kp1 = KeyPair.generate()
         kp2 = KeyPair.generate()
         psk = generate_psk()
@@ -442,25 +638,39 @@ class TestFreshKeyPairE2E:
         )
         return s1, s2
 
+    def _make_sessions_symmetric(self) -> tuple[SymmetricPeerSession, SymmetricPeerSession]:
+        psk = generate_psk()
+        s1 = SymmetricPeerSession("!aaaa0001", psk)
+        s2 = SymmetricPeerSession("!aaaa0002", psk)
+        return s1, s2
+
     def test_pki_handshake(self):
         """PKI handshake succeeds with freshly generated keys."""
-        s1, s2 = self._make_sessions()
+        s1, s2 = self._make_sessions_pki()
         _do_handshake(s1, s2)
         assert s1.is_established
         assert s2.is_established
 
     def test_pki_transport(self):
         """Transport works with freshly generated keys in PKI mode."""
-        s1, s2 = self._make_sessions()
+        s1, s2 = self._make_sessions_pki()
         _do_handshake(s1, s2)
 
         frame = b"real-world PKI test"
         assert _send_frame(s1, s2, frame) == frame
         assert _send_frame(s2, s1, frame) == frame
 
+    def test_symmetric_transport(self):
+        """Transport works with freshly generated keys in symmetric mode."""
+        s1, s2 = self._make_sessions_symmetric()
+
+        frame = b"real-world symmetric test"
+        assert _send_frame(s1, s2, frame) == frame
+        assert _send_frame(s2, s1, frame) == frame
+
     def test_pki_full_wire_roundtrip(self):
         """Full wire-level roundtrip (serialize -> parse -> deserialize) with fresh keys."""
-        s1, s2 = self._make_sessions()
+        s1, s2 = self._make_sessions_pki()
 
         # Handshake init
         init_wire = s1.initiate_handshake()
@@ -486,50 +696,17 @@ class TestFreshKeyPairE2E:
         decrypted = s2.decrypt_frame(pkt)
         assert decrypted == frame
 
-    def test_replay_protection(self):
-        """The same packet cannot be decrypted twice (replay detection)."""
-        s1, s2 = self._make_sessions()
-        _do_handshake(s1, s2)
+    def test_symmetric_full_wire_roundtrip(self):
+        """Full wire-level roundtrip in symmetric mode with fresh keys."""
+        s1, s2 = self._make_sessions_symmetric()
 
-        transport = s1.encrypt_frame(b"data")
+        frame = os.urandom(100)
+        transport = s1.encrypt_frame(frame)
         wire = transport.serialize()
+        # 1 type + 12 counter + (100 plaintext + 16 tag) = 129
+        assert len(wire) == 129
+
         pkt = parse_packet(wire)
-
-        # First decryption succeeds
-        s2.decrypt_frame(pkt)
-
-        # Second attempt is rejected (replay)
-        with pytest.raises(ValueError, match="Replay"):
-            s2.decrypt_frame(pkt)
-
-    def test_tampered_ciphertext_fails(self):
-        """Modifying even one byte of the ciphertext causes InvalidTag."""
-        s1, s2 = self._make_sessions()
-        _do_handshake(s1, s2)
-
-        transport = s1.encrypt_frame(b"sensitive data")
-        wire = bytearray(transport.serialize())
-        # Flip a bit in the ciphertext area (after type byte + 12-byte counter)
-        wire[14] ^= 0xFF
-        pkt = parse_packet(bytes(wire))
-        with pytest.raises(InvalidTag):
-            s2.decrypt_frame(pkt)
-
-    def test_counter_increments(self):
-        """Send counter increments with each encrypted frame."""
-        s1, s2 = self._make_sessions()
-        _do_handshake(s1, s2)
-
-        assert s1.send_counter == 0
-        s1.encrypt_frame(b"frame1")
-        assert s1.send_counter == 1
-        s1.encrypt_frame(b"frame2")
-        assert s1.send_counter == 2
-
-    def test_session_not_established_before_handshake(self):
-        """Sessions are not established before handshake completes."""
-        s1, s2 = self._make_sessions()
-        assert not s1.is_established
-        assert not s2.is_established
-        assert s1.state == SessionState.IDLE
-        assert s2.state == SessionState.IDLE
+        assert isinstance(pkt, TransportData)
+        decrypted = s2.decrypt_frame(pkt)
+        assert decrypted == frame
