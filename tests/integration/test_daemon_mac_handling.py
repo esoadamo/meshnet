@@ -145,11 +145,9 @@ class TestDaemonBadInitMAC:
         )
         bad_init_bytes = bad_init.serialize()
 
-        # _process_incoming raises ValueError; the daemon's _mesh_to_tap_loop
-        # catches it and logs a warning.  Verify the error propagates and
-        # the session is NOT established.
-        with pytest.raises(ValueError, match="MAC verification failed"):
-            await vpn._process_incoming("!aabbccdd", bad_init_bytes)
+        # _process_incoming catches the ValueError and logs a warning.
+        # Verify the session is NOT established.
+        await vpn._process_incoming("!aabbccdd", bad_init_bytes)
 
         # Session must remain IDLE
         assert vpn._sessions["!aabbccdd"].state == SessionState.IDLE
@@ -247,15 +245,14 @@ class TestDaemonBadMACDoSResistance:
         vpn = _setup_daemon(kp_local, kp_peer, tmp_path)
 
         # Send 20 INIT packets with random (invalid) MACs.
-        # Each raises ValueError (caught by _mesh_to_tap_loop in production).
+        # _process_incoming catches the ValueError and logs it.
         for _ in range(20):
             bad_init = HandshakeInit(
                 sender_session=int.from_bytes(os.urandom(4), "little"),
                 ephemeral_pubkey=os.urandom(32),
                 mac=os.urandom(16),
             )
-            with pytest.raises(ValueError, match="MAC verification failed"):
-                await vpn._process_incoming("!aabbccdd", bad_init.serialize())
+            await vpn._process_incoming("!aabbccdd", bad_init.serialize())
 
         # Daemon must not have crashed; session still IDLE
         assert vpn._sessions["!aabbccdd"].state == SessionState.IDLE
@@ -268,15 +265,14 @@ class TestDaemonBadMACDoSResistance:
         kp_peer = KeyPair.generate()
         vpn = _setup_daemon(kp_local, kp_peer, tmp_path)
 
-        # Send 10 bad INITs (each raises ValueError)
+        # Send 10 bad INITs (_process_incoming catches ValueError)
         for _ in range(10):
             bad_init = HandshakeInit(
                 sender_session=int.from_bytes(os.urandom(4), "little"),
                 ephemeral_pubkey=os.urandom(32),
                 mac=os.urandom(16),
             )
-            with pytest.raises(ValueError, match="MAC verification failed"):
-                await vpn._process_incoming("!aabbccdd", bad_init.serialize())
+            await vpn._process_incoming("!aabbccdd", bad_init.serialize())
 
         # Now send a legitimate INIT
         peer_session = PeerSession("!local", kp_local.public_bytes(), kp_peer)
